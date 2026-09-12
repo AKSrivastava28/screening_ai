@@ -171,6 +171,30 @@ def main() -> None:
         use_mock=args.mock,
         force=args.force,
     )
+
+    # Also generate conversational bridges and conclusion
+    extra_clips = [
+        {"id": "ack", "text": "Got it, thank you."},
+        {
+            "id": "conclusion",
+            "text": "Thank you for sharing your responses. That concludes our preliminary screening call. We will review your profile. Have a great day!",
+        },
+    ]
+    for item in extra_clips:
+        c_id = item["id"]
+        c_text = item["text"]
+        target_path = args.output_dir / f"{c_id}.wav"
+        if target_path.exists() and not args.force:
+            print(f"  [{c_id}] Already exists: {target_path}")
+            continue
+        print(f"  [{c_id}] Generating audio for: \"{c_text}\"")
+        if args.mock:
+            generate_mock_speech_wav(target_path, duration_seconds=2.0, sample_rate=8000)
+        else:
+            success = generate_with_edge_tts(c_text, target_path, voice="en-IN-NeerjaNeural")
+            if not success:
+                generate_mock_speech_wav(target_path, duration_seconds=2.0, sample_rate=8000)
+
     print("\nAudio pre-generation complete!")
 
 

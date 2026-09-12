@@ -23,10 +23,10 @@ def test_health_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert data["questions_count"] == 9
+    assert data["questions_count"] == 2
     assert "audio_files" in data
     assert "guardrails" in data
-    assert data["guardrails"]["max_silence_seconds"] == 3.0
+    assert data["guardrails"]["max_silence_seconds"] == settings.MAX_SILENCE_SECONDS
 
 
 def test_call_trigger_endpoint(client: TestClient) -> None:
@@ -169,9 +169,16 @@ def test_reports_endpoints(client: TestClient) -> None:
         assert view_resp.status_code == 200
         assert "Candidate Screening Report" in view_resp.text
         assert "PROCEED" in view_resp.text
+        assert "Download PDF" in view_resp.text
+
+        # Test GET /reports/{call_sid}/pdf
+        pdf_resp = client.get(f"/reports/{dummy_sid}/pdf")
+        assert pdf_resp.status_code == 200
+        assert pdf_resp.headers["content-type"] == "application/pdf"
+        assert pdf_resp.content.startswith(b"%PDF")
     finally:
         # Clean up dummy report
-        for ext in (".json", ".md"):
+        for ext in (".json", ".md", ".pdf"):
             p = settings.REPORTS_DIR / f"{dummy_sid}{ext}"
             if p.exists():
                 p.unlink()

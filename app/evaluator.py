@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from groq import AsyncGroq, Groq
 
 from app.config import settings
+from app.pdf_generator import generate_candidate_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ def format_markdown_report(data: Dict[str, Any]) -> str:
 
     criteria_labels = {
         "communication_clarity": "Communication Clarity",
+        "qualifications_fit": "Qualifications Fit",
         "experience_relevance": "Experience Relevance",
         "availability_notice_fit": "Availability / Notice Fit",
         "compensation_fit": "Compensation Fit",
@@ -128,24 +130,22 @@ async def generate_evaluation_report(
     )
 
     system_prompt = (
-        "You are an expert HR screening analyst. You will be provided with the verbatim transcript of a scripted "
-        "first-round phone screening interview. Score the candidate objectively and concisely based solely on "
-        "their answers.\n"
-        "Evaluate exactly these 5 criteria:\n"
+        "You are an expert HR screening analyst. You will be provided with the verbatim transcript of a rapid "
+        "first-round phone screening interview focusing on qualifications and experience. Score the candidate objectively "
+        "and concisely based solely on their answers.\n"
+        "Evaluate these criteria:\n"
         "1. communication_clarity: 1 to 5 (1 = poor/incoherent, 5 = exceptionally articulate and clear)\n"
-        "2. experience_relevance: 1 to 5 (1 = irrelevant background, 5 = directly relevant experience)\n"
-        "3. availability_notice_fit: 1 to 5 (1 = incompatible timeline, 5 = immediate or quick joiner)\n"
-        "4. compensation_fit: 1 to 5 (1 = unrealistic or huge mismatch, 5 = within standard expectations)\n"
-        "5. overall_recommendation: Must be one of 'proceed', 'hold', or 'reject'.\n"
+        "2. qualifications_fit: 1 to 5 (1 = no relevant degree or skills, 5 = strong academic/technical background)\n"
+        "3. experience_relevance: 1 to 5 (1 = zero relevant experience, 5 = substantial directly relevant experience)\n"
+        "4. overall_recommendation: Must be one of 'proceed', 'hold', or 'reject'.\n"
         "Each criterion must have a one-line justification.\n"
         "Also include a list of 2-3 key observations.\n"
         "Return ONLY a valid JSON object matching this schema without markdown fences:\n"
         "{\n"
         '  "criteria": {\n'
         '    "communication_clarity": {"score": 4, "justification": "..."},\n'
-        '    "experience_relevance": {"score": 4, "justification": "..."},\n'
-        '    "availability_notice_fit": {"score": 4, "justification": "..."},\n'
-        '    "compensation_fit": {"score": 4, "justification": "..."}\n'
+        '    "qualifications_fit": {"score": 4, "justification": "..."},\n'
+        '    "experience_relevance": {"score": 4, "justification": "..."}\n'
         "  },\n"
         '  "overall_recommendation": {\n'
         '    "decision": "proceed",\n'
@@ -168,17 +168,13 @@ async def generate_evaluation_report(
                     "score": 4,
                     "justification": "Clear and responsive during simulated screening.",
                 },
+                "qualifications_fit": {
+                    "score": 4,
+                    "justification": "Academic qualifications and technical skills fit role requirements.",
+                },
                 "experience_relevance": {
                     "score": 4,
-                    "justification": "Relevant skills and project background mentioned.",
-                },
-                "availability_notice_fit": {
-                    "score": 4,
-                    "justification": "Manageable notice period aligned with hiring timeline.",
-                },
-                "compensation_fit": {
-                    "score": 4,
-                    "justification": "Expectations align with standard role budget.",
+                    "justification": "Demonstrated relevant experience in core technical areas.",
                 },
             },
             "overall_recommendation": {
@@ -186,7 +182,7 @@ async def generate_evaluation_report(
                 "justification": "Candidate meets primary screening prerequisites.",
             },
             "key_observations": [
-                "Answered all 9 screening questions.",
+                "Completed preliminary screening interview.",
                 "Simulated evaluation generated for offline testing.",
             ],
         }
@@ -227,16 +223,15 @@ async def generate_evaluation_report(
             logger.error("All LLM candidates failed. Last error: %s", last_error)
             parsed_llm_response = {
                 "criteria": {
-                    "communication_clarity": {"score": 3, "justification": f"LLM error: {last_error}"},
-                    "experience_relevance": {"score": 3, "justification": f"LLM error: {last_error}"},
-                    "availability_notice_fit": {"score": 3, "justification": f"LLM error: {last_error}"},
-                    "compensation_fit": {"score": 3, "justification": f"LLM error: {last_error}"},
+                    "communication_clarity": {"score": 3, "justification": f"LLM evaluation notice: {last_error}"},
+                    "qualifications_fit": {"score": 3, "justification": f"LLM evaluation notice: {last_error}"},
+                    "experience_relevance": {"score": 3, "justification": f"LLM evaluation notice: {last_error}"},
                 },
                 "overall_recommendation": {
                     "decision": "hold",
-                    "justification": f"Report fallback due to error: {last_error}",
+                    "justification": f"Report fallback due to: {last_error}",
                 },
-                "key_observations": ["Report generation encountered error."],
+                "key_observations": ["Report generation fallback invoked."],
             }
 
     # Calculate costs
@@ -247,14 +242,24 @@ async def generate_evaluation_report(
         completion_tokens=completion_tokens,
     )
 
+    raw_criteria = parsed_llm_response.get("criteria", {})
+    clean_criteria = {}
+    clean_observations = parsed_llm_response.get("key_observations", [])
+    if isinstance(raw_criteria, dict):
+        for k, v in raw_criteria.items():
+            if isinstance(v, dict):
+                clean_criteria[k] = v
+            elif k == "key_observations" and isinstance(v, list) and not clean_observations:
+                clean_observations = v
+
     full_report = {
         "call_sid": call_sid,
         "candidate_phone": candidate_phone,
         "call_duration_seconds": call_duration_seconds,
         "audio_transcribed_seconds": audio_transcribed_seconds,
-        "criteria": parsed_llm_response.get("criteria", {}),
+        "criteria": clean_criteria,
         "overall_recommendation": parsed_llm_response.get("overall_recommendation", {}),
-        "key_observations": parsed_llm_response.get("key_observations", []),
+        "key_observations": clean_observations,
         "cost_estimate": cost_summary,
         "transcript": transcript_records,
     }
@@ -270,6 +275,14 @@ async def generate_evaluation_report(
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-    logger.info("Evaluation report saved to %s and %s", json_path, md_path)
+    # Save to reports/{call_sid}.pdf
+    pdf_path = reports_path / f"{call_sid}.pdf"
+    try:
+        generate_candidate_pdf(full_report, pdf_path)
+        logger.info("Evaluation report PDF saved to %s", pdf_path)
+    except Exception as pdf_err:
+        logger.error("Failed to generate candidate PDF: %s", pdf_err)
+
+    logger.info("Evaluation report saved to %s, %s, and %s", json_path, md_path, pdf_path)
     logger.info("Total Call Estimated Cost: $%s", cost_summary["total_estimated_cost_usd"])
     return full_report

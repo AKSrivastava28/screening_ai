@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from app.audio_utils import chunk_pcm_for_exotel, wav_to_pcm16_bytes
@@ -288,23 +288,34 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             next_q = questions[current_q_idx]
             q_id = next_q["id"]
             wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
+
+            # Conversational acknowledgment before next question
+            ack_file = settings.AUDIO_DIR / "ack.wav"
+            if ack_file.exists():
+                logger.info("Streaming conversational acknowledgment 'ack.wav'...")
+                is_streaming_bot_audio = True
+                await send_audio_file(websocket, stream_sid, ack_file, "ack")
+                is_streaming_bot_audio = False
+                await asyncio.sleep(0.5)
+
             logger.info("Advancing to question [%s]: %s", q_id, next_q["text"])
-
-            # Brief conversational pause before bot speaks next question
-            await asyncio.sleep(0.8)
-
             is_streaming_bot_audio = True
             await send_audio_file(websocket, stream_sid, wav_file, q_id)
             is_streaming_bot_audio = False
             # Brief pause to let carrier audio playback buffer settle
             await asyncio.sleep(0.4)
-            # For substantive questions Q2-Q8, require at least 3.0s of answer time before silence can terminate
-            turn_detector.reset(min_answer_seconds=3.0)
+            turn_detector.reset(min_answer_seconds=2.0)
             logger.info("Listening for candidate response to [%s]...", q_id)
             return False
         else:
-            logger.info("All screening questions completed. Ending call.")
-            await asyncio.sleep(1.0)
+            logger.info("All screening questions completed.")
+            conclusion_file = settings.AUDIO_DIR / "conclusion.wav"
+            if conclusion_file.exists():
+                logger.info("Streaming closing statement 'conclusion.wav'...")
+                is_streaming_bot_audio = True
+                await send_audio_file(websocket, stream_sid, conclusion_file, "conclusion")
+                is_streaming_bot_audio = False
+                await asyncio.sleep(1.2)
             await finalize_session(reason="all_questions_completed")
             return True
 
@@ -375,7 +386,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 await send_audio_file(websocket, stream_sid, wav_file, q_id)
                 is_streaming_bot_audio = False
                 await asyncio.sleep(0.4)
-                turn_detector.reset(min_answer_seconds=1.0)
+                turn_detector.reset(min_answer_seconds=2.0)
                 logger.info("Listening for candidate response to [%s]...", q_id)
 
             elif ev_type == "media":
@@ -528,6 +539,7 @@ async def list_reports() -> JSONResponse:
                 "duration_seconds": data.get("call_duration_seconds", 0),
                 "total_cost_usd": data.get("cost_estimate", {}).get("total_estimated_cost_usd", 0),
                 "view_url": f"/reports/{f.stem}/view",
+                "pdf_url": f"/reports/{f.stem}/pdf",
                 "json_url": f"/reports/{f.stem}",
                 "markdown_url": f"/reports/{f.stem}/markdown",
             })
@@ -556,6 +568,35 @@ async def get_report_markdown(call_sid: str) -> PlainTextResponse:
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
     return PlainTextResponse(content=content)
+
+
+@app.get("/reports/{call_sid}/pdf")
+async def get_report_pdf(call_sid: str) -> Response:
+    """Download candidate screening report as PDF."""
+    pdf_path = settings.REPORTS_DIR / f"{call_sid}.pdf"
+    if not pdf_path.exists():
+        json_path = settings.REPORTS_DIR / f"{call_sid}.json"
+        if not json_path.exists():
+            raise HTTPException(status_code=404, detail=f"Report not found for call {call_sid}")
+        with open(json_path, "r", encoding="utf-8") as f:
+            report_data = json.load(f)
+        try:
+            from app.pdf_generator import generate_candidate_pdf
+            generate_candidate_pdf(report_data, pdf_path)
+        except Exception as err:
+            logger.error("Error generating PDF on the fly: %s", err)
+            raise HTTPException(status_code=500, detail="Failed to generate PDF")
+
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="screening_report_{call_sid}.pdf"'
+        },
+    )
 
 
 @app.get("/reports/{call_sid}/view", response_class=HTMLResponse)
@@ -617,7 +658,8 @@ async def view_report_html(call_sid: str) -> HTMLResponse:
         <h1 style="margin:0 0 6px 0; font-size:24px;">Candidate Screening Report</h1>
         <p style="margin:0; color:#6b7280; font-size:14px;">Call SID: <code>{call_sid}</code> | Phone: <strong>{data.get('candidate_phone', 'N/A')}</strong></p>
       </div>
-      <div>
+      <div style="display:flex; gap:12px; align-items:center;">
+        <a href="/reports/{call_sid}/pdf" style="display:inline-block; padding:8px 16px; background:#2563eb; color:white; font-weight:600; font-size:13px; text-decoration:none; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.05);">📥 Download PDF</a>
         <span class="badge">{decision}</span>
       </div>
     </div>

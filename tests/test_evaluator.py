@@ -94,9 +94,11 @@ def test_generate_evaluation_report_file_creation(tmp_path: Path) -> None:
 
     json_file = tmp_path / "TEST_CALL_SID_001.json"
     md_file = tmp_path / "TEST_CALL_SID_001.md"
+    pdf_file = tmp_path / "TEST_CALL_SID_001.pdf"
 
     assert json_file.exists()
     assert md_file.exists()
+    assert pdf_file.exists()
 
     with open(json_file, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -105,8 +107,6 @@ def test_generate_evaluation_report_file_creation(tmp_path: Path) -> None:
     assert "criteria" in data
     assert "communication_clarity" in data["criteria"]
     assert "experience_relevance" in data["criteria"]
-    assert "availability_notice_fit" in data["criteria"]
-    assert "compensation_fit" in data["criteria"]
     assert "overall_recommendation" in data
     assert data["overall_recommendation"]["decision"] in ("proceed", "hold", "reject")
     assert "cost_estimate" in data
