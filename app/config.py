@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # Call Behavior & Guardrails
-    MAX_SILENCE_SECONDS: float = 1.2
+    MAX_SILENCE_SECONDS: float = 2.0
     MAX_ANSWER_SECONDS: float = 45.0
     TOTAL_CALL_TIMEOUT_SECONDS: int = 480
     STREAM_CHUNK_INTERVAL_SECONDS: float = 0.19

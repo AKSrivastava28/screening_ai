@@ -176,6 +176,10 @@ def main() -> None:
     extra_clips = [
         {"id": "ack", "text": "Got it, thank you."},
         {
+            "id": "inaudible",
+            "text": "I'm sorry, I couldn't hear that clearly. Let's move to the next question.",
+        },
+        {
             "id": "conclusion",
             "text": "Thank you for sharing your responses. That concludes our preliminary screening call. We will review your profile. Have a great day!",
         },

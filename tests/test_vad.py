@@ -135,3 +135,33 @@ def test_turn_detector_reset() -> None:
     assert not detector.has_started_speaking
     assert detector.turn_complete_reason == ""
     assert len(detector.get_audio_bytes()) == 0
+
+
+def test_turn_detector_min_answer_seconds() -> None:
+    """Verify that turn does not terminate on silence until min_answer_seconds has elapsed."""
+    detector = TurnDetector(
+        sample_rate=8000,
+        max_silence_seconds=1.0,
+        max_answer_seconds=20.0,
+        min_answer_seconds=3.0,
+        speech_threshold=0.5,
+        silence_threshold=0.35,
+    )
+    mock_model = MockVADModel(prob=0.85)
+    detector.model = mock_model
+
+    # Feed 1.0s speech
+    detector.feed_audio(b"\x01\x00" * 8000)
+    assert detector.has_started_speaking
+
+    # Switch to silence
+    mock_model.prob = 0.05
+    # Feed 1.2s silence (> max_silence_seconds 1.0s, but total audio 2.2s < min_answer_seconds 3.0s)
+    complete = detector.feed_audio(b"\x00\x00" * 9600)
+    assert not complete, "Turn should not complete before min_answer_seconds"
+
+    # Feed another 1.0s silence (total audio 3.2s > 3.0s, silence continues)
+    complete = detector.feed_audio(b"\x00\x00" * 8000)
+    assert complete, "Turn should complete once both min_answer_seconds and max_silence_seconds are satisfied"
+    assert detector.turn_complete_reason == "silence_timeout"
+

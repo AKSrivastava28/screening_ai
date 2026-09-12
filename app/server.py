@@ -123,6 +123,13 @@ async def health_check() -> Dict[str, Any]:
             "size_bytes": file_path.stat().st_size if file_path.exists() else 0,
         }
 
+    for clip in ("ack", "inaudible", "conclusion"):
+        clip_path = settings.AUDIO_DIR / f"{clip}.wav"
+        audio_status[clip] = {
+            "exists": clip_path.exists(),
+            "size_bytes": clip_path.stat().st_size if clip_path.exists() else 0,
+        }
+
     return {
         "status": "healthy",
         "service": "AI Voice Screening Agent",
@@ -231,7 +238,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     current_q_idx = 0
     is_streaming_bot_audio = False
 
-    turn_detector = TurnDetector()
+    turn_detector = TurnDetector(min_answer_seconds=2.5, initial_silence_timeout=7.0)
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
     total_candidate_audio_sec = 0.0
@@ -286,11 +293,25 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             len(buffered_pcm),
         )
 
-        # Transcribe answer via Groq Whisper STT
-        transcript = await transcribe_answer(buffered_pcm)
-        if not transcript.strip() or transcript.strip() in (".", "..", "..."):
-            transcript = "[No clear response recorded]"
-        logger.info("Transcribed [%s]: '%s'", current_q["id"], transcript)
+        # Check if candidate spoke or if turn timed out
+        is_inaudible = False
+        if turn_detector.turn_complete_reason == "initial_silence_timeout" or not turn_detector.speech_detected:
+            transcript = "[No speech detected]"
+            is_inaudible = True
+        else:
+            # Transcribe answer via Groq Whisper STT
+            transcript = await transcribe_answer(buffered_pcm)
+            if not transcript.strip() or transcript.strip() in (".", "..", "..."):
+                transcript = "[No clear response recorded]"
+                is_inaudible = True
+            elif ans_duration < 1.2 and transcript.strip().rstrip(".").lower() in ("thank you", "thanks", "you"):
+                # Filter out Whisper hallucinations on faint background noise
+                transcript = "[No clear response recorded]"
+                is_inaudible = True
+            elif transcript.startswith("[No ") or transcript.startswith("[Unintelligible"):
+                is_inaudible = True
+
+        logger.info("Transcribed [%s]: '%s' (is_inaudible=%s)", current_q["id"], transcript, is_inaudible)
         transcripts.append({
             "question_id": current_q["id"],
             "question": current_q["text"],
@@ -304,12 +325,13 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             q_id = next_q["id"]
             wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
 
-            # Conversational acknowledgment before next question
-            ack_file = settings.AUDIO_DIR / "ack.wav"
-            if ack_file.exists():
-                logger.info("Streaming conversational acknowledgment 'ack.wav'...")
+            # Conversational bridge before next question
+            bridge_clip = "inaudible" if is_inaudible else "ack"
+            bridge_file = settings.AUDIO_DIR / f"{bridge_clip}.wav"
+            if bridge_file.exists():
+                logger.info("Streaming conversational bridge '%s.wav'...", bridge_clip)
                 is_streaming_bot_audio = True
-                await send_audio_file(websocket, stream_sid, ack_file, "ack")
+                await send_audio_file(websocket, stream_sid, bridge_file, bridge_clip)
                 is_streaming_bot_audio = False
                 await asyncio.sleep(0.3)
 
@@ -319,7 +341,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             is_streaming_bot_audio = False
             # Brief pause to let carrier audio playback buffer settle
             await asyncio.sleep(0.3)
-            turn_detector.reset(min_answer_seconds=0.5)
+            turn_detector.reset(min_answer_seconds=2.5)
             logger.info("Listening for candidate response to [%s]...", q_id)
             return False
         else:
@@ -401,7 +423,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 await send_audio_file(websocket, stream_sid, wav_file, q_id)
                 is_streaming_bot_audio = False
                 await asyncio.sleep(0.3)
-                turn_detector.reset(min_answer_seconds=0.5)
+                turn_detector.reset(min_answer_seconds=2.5)
                 logger.info("Listening for candidate response to [%s]...", q_id)
 
             elif ev_type == "media":
