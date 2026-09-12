@@ -54,9 +54,9 @@ class TurnDetector:
         max_silence_seconds: Optional[float] = None,
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
-        initial_silence_timeout: float = 12.0,
-        speech_threshold: float = 0.35,
-        silence_threshold: float = 0.20,
+        initial_silence_timeout: float = 4.0,
+        speech_threshold: float = 0.25,
+        silence_threshold: float = 0.15,
     ) -> None:
         self.sample_rate = sample_rate
         self.max_silence_seconds = (
@@ -164,7 +164,7 @@ class TurnDetector:
             self.start_time = time.monotonic()
 
         # Apply software Automatic Gain Control (AGC) to boost faint phone audio
-        boosted_chunk = normalize_audio_pcm(pcm_bytes, target_rms=1200.0, max_gain=40.0)
+        boosted_chunk = normalize_audio_pcm(pcm_bytes, target_rms=1400.0, max_gain=50.0)
 
         # Buffer boosted audio for later Whisper transcription
         self.buffered_pcm.extend(boosted_chunk)

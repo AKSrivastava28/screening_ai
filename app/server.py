@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -41,6 +42,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class NormalizePathMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            raw_path = scope.get("path", "")
+            if "//" in raw_path:
+                scope["path"] = re.sub(r"/+", "/", raw_path)
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(NormalizePathMiddleware)
 
 # In-memory registry for active & recent call sessions
 active_sessions: Dict[str, Dict[str, Any]] = {}
@@ -272,9 +288,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
 
         # Transcribe answer via Groq Whisper STT
         transcript = await transcribe_answer(buffered_pcm)
-        if not transcript.strip() or transcript.strip() in (".", "..", "...", "Thank you."):
-            if current_q["id"] == "q1":
-                transcript = "Yes, that is fine."
+        if not transcript.strip() or transcript.strip() in (".", "..", "..."):
+            transcript = "[No clear response recorded]"
         logger.info("Transcribed [%s]: '%s'", current_q["id"], transcript)
         transcripts.append({
             "question_id": current_q["id"],
@@ -296,15 +311,15 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 is_streaming_bot_audio = True
                 await send_audio_file(websocket, stream_sid, ack_file, "ack")
                 is_streaming_bot_audio = False
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
 
             logger.info("Advancing to question [%s]: %s", q_id, next_q["text"])
             is_streaming_bot_audio = True
             await send_audio_file(websocket, stream_sid, wav_file, q_id)
             is_streaming_bot_audio = False
             # Brief pause to let carrier audio playback buffer settle
-            await asyncio.sleep(0.4)
-            turn_detector.reset(min_answer_seconds=2.0)
+            await asyncio.sleep(0.3)
+            turn_detector.reset(min_answer_seconds=0.5)
             logger.info("Listening for candidate response to [%s]...", q_id)
             return False
         else:
@@ -385,8 +400,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 is_streaming_bot_audio = True
                 await send_audio_file(websocket, stream_sid, wav_file, q_id)
                 is_streaming_bot_audio = False
-                await asyncio.sleep(0.4)
-                turn_detector.reset(min_answer_seconds=2.0)
+                await asyncio.sleep(0.3)
+                turn_detector.reset(min_answer_seconds=0.5)
                 logger.info("Listening for candidate response to [%s]...", q_id)
 
             elif ev_type == "media":
@@ -532,16 +547,17 @@ async def list_reports() -> JSONResponse:
         try:
             with open(f, "r", encoding="utf-8") as jf:
                 data = json.load(jf)
+            base = settings.PUBLIC_BASE_URL.rstrip('/')
             summary_list.append({
                 "call_sid": data.get("call_sid", f.stem),
                 "candidate_phone": data.get("candidate_phone", "N/A"),
                 "recommendation": data.get("overall_recommendation", {}).get("decision", "N/A"),
                 "duration_seconds": data.get("call_duration_seconds", 0),
                 "total_cost_usd": data.get("cost_estimate", {}).get("total_estimated_cost_usd", 0),
-                "view_url": f"/reports/{f.stem}/view",
-                "pdf_url": f"/reports/{f.stem}/pdf",
-                "json_url": f"/reports/{f.stem}",
-                "markdown_url": f"/reports/{f.stem}/markdown",
+                "view_url": f"{base}/reports/{f.stem}/view",
+                "pdf_url": f"{base}/reports/{f.stem}/pdf",
+                "json_url": f"{base}/reports/{f.stem}",
+                "markdown_url": f"{base}/reports/{f.stem}/markdown",
             })
         except Exception:
             continue
