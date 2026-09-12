@@ -21,10 +21,10 @@ class ExotelClient:
         api_token: Optional[str] = None,
         subdomain: Optional[str] = None,
     ) -> None:
-        self.account_sid = account_sid or settings.EXOTEL_ACCOUNT_SID
-        self.api_key = api_key or settings.EXOTEL_API_KEY
-        self.api_token = api_token or settings.EXOTEL_API_TOKEN
-        self.subdomain = subdomain or settings.EXOTEL_SUBDOMAIN
+        self.account_sid = account_sid if account_sid is not None else settings.EXOTEL_ACCOUNT_SID
+        self.api_key = api_key if api_key is not None else settings.EXOTEL_API_KEY
+        self.api_token = api_token if api_token is not None else settings.EXOTEL_API_TOKEN
+        self.subdomain = subdomain if subdomain is not None else settings.EXOTEL_SUBDOMAIN
 
     @property
     def base_url(self) -> str:
@@ -46,8 +46,8 @@ class ExotelClient:
         Connects either directly to a bidirectional WebSocket stream (Voicebot)
         or via an Exotel Call Flow (Applet).
         """
-        destination = (to_number or settings.EXOTEL_CALLER_NUMBER).strip()
-        from_phone = (caller_id or settings.EXOTEL_EXOPHONE).strip()
+        destination = (to_number if to_number is not None else settings.EXOTEL_CALLER_NUMBER).strip()
+        from_phone = (caller_id if caller_id is not None else settings.EXOTEL_EXOPHONE).strip()
         flow_id = app_id or settings.EXOTEL_APP_ID
         ws_url = stream_url or settings.public_ws_url
         max_duration = time_limit or settings.TOTAL_CALL_TIMEOUT_SECONDS
@@ -73,23 +73,32 @@ class ExotelClient:
 
         endpoint = f"{self.base_url}/v1/Accounts/{self.account_sid}/Calls/connect.json"
 
-        # Build form payload according to Exotel API specification
+        # Build form payload with both lowercase and Titlecase for 100% Exotel compatibility
         data: Dict[str, Any] = {
             "From": destination,
+            "from": destination,
             "CallerId": from_phone,
+            "callerid": from_phone,
             "CallType": "trans",
+            "calltype": "trans",
             "TimeLimit": str(max_duration),
+            "timelimit": str(max_duration),
             "StatusCallback": settings.public_status_callback_url,
+            "statuscallback": settings.public_status_callback_url,
             "StatusCallbackEvents[]": "terminal",
+            "statuscallbackevents[]": "terminal",
         }
 
         if flow_id:
             # Flow-based connection
             data["Url"] = f"http://my.exotel.com/{self.account_sid}/exoml/start_voice/{flow_id}"
+            data["url"] = data["Url"]
         else:
             # Direct stream connection (AgentStream Voicebot)
             data["StreamUrl"] = ws_url
+            data["streamurl"] = ws_url
             data["StreamType"] = "bidirectional"
+            data["streamtype"] = "bidirectional"
 
         logger.info(
             "Triggering Exotel call to %s from %s (Endpoint: %s)",

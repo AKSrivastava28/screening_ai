@@ -46,6 +46,28 @@ app.add_middleware(
 active_sessions: Dict[str, Dict[str, Any]] = {}
 
 
+@app.on_event("startup")
+async def on_startup() -> None:
+    """Ensure audio files are present or generate them with Groq TTS on startup."""
+    logger.info("Server starting up. Checking audio questions...")
+    api_key = settings.GROQ_API_KEY.strip()
+    if api_key:
+        logger.info("GROQ_API_KEY found. Generating/verifying question audio with Groq TTS...")
+        from generate_question_audio import generate_audio_for_questions
+        try:
+            generate_audio_for_questions(
+                questions_file=settings.QUESTIONS_FILE,
+                output_dir=settings.AUDIO_DIR,
+                use_mock=False,
+                force=False,
+            )
+            logger.info("Question audio verified successfully.")
+        except Exception as e:
+            logger.warning("Error generating audio on startup: %s", e)
+    else:
+        logger.info("GROQ_API_KEY not configured. Using pre-existing audio files.")
+
+
 class TriggerCallRequest(BaseModel):
     to_number: Optional[str] = None
     caller_id: Optional[str] = None
@@ -269,7 +291,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                     "start_time": call_start_time,
                 }
 
-                # Start first question immediately
+                # Start first question after a brief 0.8s pause for telephony audio path stabilization
+                await asyncio.sleep(0.8)
                 current_q = questions[current_q_idx]
                 q_id = current_q["id"]
                 wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
@@ -371,8 +394,20 @@ async def call_status_webhook(request: Request) -> JSONResponse:
             except Exception:
                 pass
         else:
-            form = await request.form()
-            params = dict(form)
+            try:
+                form = await request.form()
+                params = dict(form)
+            except Exception as e:
+                logger.warning("request.form() failed, falling back to raw body parse: %s", e)
+                try:
+                    body_bytes = await request.body()
+                    from urllib.parse import parse_qs
+                    params = {
+                        k: v[0] if len(v) == 1 else v
+                        for k, v in parse_qs(body_bytes.decode("utf-8", errors="ignore")).items()
+                    }
+                except Exception:
+                    params = {}
     else:
         params = dict(request.query_params)
 

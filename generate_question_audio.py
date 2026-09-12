@@ -22,6 +22,27 @@ from app.audio_utils import generate_mock_speech_wav, resample_audio_to_8khz, wa
 from app.config import settings
 
 
+def generate_with_edge_tts(text: str, target_path: Path, voice: str = "en-IN-NeerjaNeural") -> bool:
+    """Generate audio using Edge-TTS and resample to 8kHz mono WAV."""
+    try:
+        import asyncio
+        import edge_tts
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            asyncio.run(edge_tts.Communicate(text, voice).save(tmp_path))
+            resample_audio_to_8khz(tmp_path, target_path)
+            return True
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+    except Exception as e:
+        print(f"    Edge-TTS generation error: {e}")
+        return False
+
+
 def generate_audio_for_questions(
     questions_file: Path,
     output_dir: Path,
@@ -45,17 +66,12 @@ def generate_audio_for_questions(
         api_key = settings.GROQ_API_KEY.strip()
         if not api_key:
             print("Warning: GROQ_API_KEY is not set.")
-            if not use_mock:
-                print("Falling back to synthetic audio generation (--mock mode).")
-                use_mock = True
         else:
             try:
                 from groq import Groq
                 client = Groq(api_key=api_key)
             except Exception as e:
                 print(f"Failed to initialize Groq client: {e}")
-                print("Falling back to synthetic audio generation.")
-                use_mock = True
 
     for item in questions:
         q_id = item["id"]
@@ -69,40 +85,48 @@ def generate_audio_for_questions(
         print(f"  [{q_id}] Generating audio for: \"{text}\"")
 
         if use_mock:
-            # Generate synthetic 8kHz WAV for testing
             generate_mock_speech_wav(target_path, duration_seconds=2.5, sample_rate=8000)
             print(f"  [{q_id}] -> Saved synthetic audio to {target_path}")
         else:
-            try:
-                # Call Groq TTS API
-                # Groq Orpheus endpoint
-                response = client.audio.speech.create(
-                    model=settings.GROQ_TTS_MODEL,
-                    voice=settings.GROQ_TTS_VOICE,
-                    input=text,
-                    response_format="wav",
-                )
-
-                # Write to temp file then resample to 8000Hz mono
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    tmp_path = tmp.name
-                    # response is a BinaryAPIResponse
-                    if hasattr(response, "content"):
-                        tmp.write(response.content)
-                    elif hasattr(response, "read"):
-                        tmp.write(response.read())
-                    else:
-                        tmp.write(bytes(response))
-
+            success = False
+            # 1. Try Groq TTS if client is available
+            if client is not None:
                 try:
-                    resample_audio_to_8khz(tmp_path, target_path)
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+                    response = client.audio.speech.create(
+                        model=settings.GROQ_TTS_MODEL,
+                        voice=settings.GROQ_TTS_VOICE,
+                        input=text,
+                        response_format="wav",
+                    )
 
-                print(f"  [{q_id}] -> Saved 8kHz WAV to {target_path}")
-            except Exception as e:
-                print(f"  [{q_id}] Error calling Groq TTS: {e}")
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                        tmp_path = tmp.name
+                        if hasattr(response, "content"):
+                            tmp.write(response.content)
+                        elif hasattr(response, "read"):
+                            tmp.write(response.read())
+                        else:
+                            tmp.write(bytes(response))
+
+                    try:
+                        resample_audio_to_8khz(tmp_path, target_path)
+                        print(f"  [{q_id}] -> Saved 8kHz WAV via Groq TTS to {target_path}")
+                        success = True
+                    finally:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                except Exception as e:
+                    print(f"  [{q_id}] Groq TTS unavailable ({e}). Trying edge-tts fallback...")
+
+            # 2. Fallback to edge-tts if Groq failed or not configured
+            if not success:
+                print(f"  [{q_id}] Generating with edge-tts (voice: en-IN-NeerjaNeural)...")
+                success = generate_with_edge_tts(text, target_path, voice="en-IN-NeerjaNeural")
+                if success:
+                    print(f"  [{q_id}] -> Saved 8kHz WAV via edge-tts to {target_path}")
+
+            # 3. Last resort fallback to synthetic tone
+            if not success:
                 print(f"  [{q_id}] Falling back to synthetic tone for {q_id}")
                 generate_mock_speech_wav(target_path, duration_seconds=2.5, sample_rate=8000)
 
