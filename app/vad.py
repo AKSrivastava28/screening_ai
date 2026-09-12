@@ -53,8 +53,8 @@ class TurnDetector:
         max_silence_seconds: Optional[float] = None,
         max_answer_seconds: Optional[float] = None,
         initial_silence_timeout: float = 12.0,
-        speech_threshold: float = 0.5,
-        silence_threshold: float = 0.35,
+        speech_threshold: float = 0.30,
+        silence_threshold: float = 0.20,
     ) -> None:
         self.sample_rate = sample_rate
         self.max_silence_seconds = (
@@ -91,9 +91,55 @@ class TurnDetector:
         self.buffered_pcm = bytearray()
         self.leftover_pcm = bytearray()
         self.start_time: Optional[float] = None
+        self.last_speech_time: Optional[float] = None
 
         if self.model is not None and hasattr(self.model, "reset_states"):
             self.model.reset_states()
+
+    def check_timeouts(self) -> bool:
+        """Check wall-clock timeouts for silence and answer limits.
+
+        Crucial for telephony environments where silence suppression (Comfort Noise
+        Generation) pauses incoming audio frames when the candidate stops speaking.
+        """
+        if self.is_turn_complete:
+            return True
+        if self.start_time is None:
+            return False
+
+        now = time.monotonic()
+        wall_elapsed = now - self.start_time
+
+        # 1. Candidate spoke and silence exceeded max_silence_seconds
+        if self.has_started_speaking and self.last_speech_time is not None:
+            silence_elapsed = now - self.last_speech_time
+            if silence_elapsed >= self.max_silence_seconds:
+                self.is_turn_complete = True
+                self.turn_complete_reason = "silence_timeout"
+                logger.info(
+                    "VAD: Silence timeout reached (%.1fs silence after speech)",
+                    silence_elapsed,
+                )
+                return True
+
+        # 2. Hard answer cap exceeded
+        if wall_elapsed >= self.max_answer_seconds:
+            self.is_turn_complete = True
+            self.turn_complete_reason = "max_answer_timeout"
+            logger.info("VAD: Max answer duration reached (%.1fs wallclock)", wall_elapsed)
+            return True
+
+        # 3. Initial silence timeout (candidate never started speaking)
+        if not self.has_started_speaking and wall_elapsed >= self.initial_silence_timeout:
+            self.is_turn_complete = True
+            self.turn_complete_reason = "initial_silence_timeout"
+            logger.info(
+                "VAD: Initial silence timeout reached (%.1fs wallclock with no speech)",
+                wall_elapsed,
+            )
+            return True
+
+        return False
 
     def feed_audio(self, pcm_bytes: bytes) -> bool:
         """Process incoming raw 16-bit PCM audio bytes from Exotel.
@@ -105,7 +151,7 @@ class TurnDetector:
             return True
 
         if not pcm_bytes:
-            return False
+            return self.check_timeouts()
 
         if self.start_time is None:
             self.start_time = time.monotonic()
@@ -131,16 +177,20 @@ class TurnDetector:
             with torch.no_grad():
                 speech_prob = model(audio_float32, self.sample_rate).item()
 
+            rms = float(np.sqrt(np.mean(audio_int16.astype(np.float32) ** 2)))
+            is_speech = (speech_prob >= self.speech_threshold) or (rms >= 350.0)
+
             self.total_answer_seconds += self.chunk_duration_seconds
 
             # State transitions
-            if speech_prob >= self.speech_threshold:
+            if is_speech:
                 if not self.has_started_speaking:
-                    logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
+                    logger.info("VAD: Candidate started speaking (prob=%.2f, rms=%.1f)", speech_prob, rms)
                     self.has_started_speaking = True
                 self.is_speaking_now = True
                 self.accumulated_silence_seconds = 0.0
-            elif speech_prob < self.silence_threshold:
+                self.last_speech_time = time.monotonic()
+            elif speech_prob < self.silence_threshold and rms < 200.0:
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds
@@ -179,6 +229,10 @@ class TurnDetector:
 
         # Save remaining bytes that couldn't form a full 256-sample window
         self.leftover_pcm = combined[idx:]
+
+        # Also verify wall-clock timeout
+        if not self.is_turn_complete:
+            self.check_timeouts()
 
         return self.is_turn_complete
 

@@ -255,6 +255,49 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
         except Exception as err:
             logger.error("Failed to generate evaluation report: %s", err)
 
+    async def handle_turn_completed() -> bool:
+        nonlocal current_q_idx, total_candidate_audio_sec, is_streaming_bot_audio
+        buffered_pcm = turn_detector.get_audio_bytes()
+        ans_duration = len(buffered_pcm) / (8000 * 2)
+        total_candidate_audio_sec += ans_duration
+
+        current_q = questions[current_q_idx]
+        logger.info(
+            "Candidate answer completed for [%s] (Reason: %s). Audio: %.2fs (%d bytes).",
+            current_q["id"],
+            turn_detector.turn_complete_reason,
+            ans_duration,
+            len(buffered_pcm),
+        )
+
+        # Transcribe answer via Groq Whisper STT
+        transcript = await transcribe_answer(buffered_pcm)
+        logger.info("Transcribed [%s]: '%s'", current_q["id"], transcript)
+        transcripts.append({
+            "question_id": current_q["id"],
+            "question": current_q["text"],
+            "answer": transcript,
+            "duration_seconds": round(ans_duration, 2),
+        })
+
+        current_q_idx += 1
+        if current_q_idx < len(questions):
+            next_q = questions[current_q_idx]
+            q_id = next_q["id"]
+            wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
+            logger.info("Advancing to question [%s]: %s", q_id, next_q["text"])
+
+            is_streaming_bot_audio = True
+            await send_audio_file(websocket, stream_sid, wav_file, q_id)
+            is_streaming_bot_audio = False
+            turn_detector.reset()
+            return False
+        else:
+            logger.info("All screening questions completed. Ending call.")
+            await asyncio.sleep(1.0)
+            await finalize_session(reason="all_questions_completed")
+            return True
+
     try:
         while True:
             # Check hard call timeout safety net
@@ -270,20 +313,34 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             try:
                 raw_data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             except asyncio.TimeoutError:
+                # Handle telephony carrier silence suppression (Comfort Noise Generation)
+                if not is_streaming_bot_audio and turn_detector.check_timeouts():
+                    done = await handle_turn_completed()
+                    if done:
+                        break
                 continue
 
             event = json.loads(raw_data)
-            ev_type = event.get("event", "")
+            ev_type = str(event.get("event") or event.get("Event") or "").lower()
 
             if ev_type == "connected":
                 logger.info("Exotel event: connected")
                 continue
 
             elif ev_type == "start":
-                start_data = event.get("start", {})
-                stream_sid = event.get("stream_sid") or start_data.get("stream_sid", "")
-                call_sid = start_data.get("call_sid", "")
-                candidate_phone = start_data.get("from", settings.EXOTEL_CALLER_NUMBER)
+                start_data = event.get("start") or event.get("Start") or {}
+                stream_sid = (
+                    event.get("stream_sid")
+                    or event.get("StreamSid")
+                    or start_data.get("stream_sid")
+                    or start_data.get("StreamSid", "")
+                )
+                call_sid = start_data.get("call_sid") or start_data.get("CallSid", "")
+                candidate_phone = (
+                    start_data.get("from")
+                    or start_data.get("From")
+                    or settings.EXOTEL_CALLER_NUMBER
+                )
 
                 logger.info(
                     "Exotel event: start (StreamSID: %s, CallSID: %s, From: %s)",
@@ -314,8 +371,14 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 if is_streaming_bot_audio:
                     continue
 
-                media_data = event.get("media", {})
-                payload_b64 = media_data.get("payload", "")
+                media_data = event.get("media") or event.get("Media") or {}
+                payload_b64 = (
+                    media_data.get("payload")
+                    or media_data.get("Payload")
+                    or event.get("payload")
+                    or event.get("Payload")
+                    or ""
+                )
                 if not payload_b64:
                     continue
 
@@ -323,55 +386,18 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 turn_finished = turn_detector.feed_audio(pcm_chunk)
 
                 if turn_finished:
-                    # Candidate finished speaking current answer
-                    buffered_pcm = turn_detector.get_audio_bytes()
-                    ans_duration = len(buffered_pcm) / (8000 * 2)
-                    total_candidate_audio_sec += ans_duration
-
-                    current_q = questions[current_q_idx]
-                    logger.info(
-                        "Answer completed for [%s]. Audio duration: %.2fs. Reason: %s",
-                        current_q["id"],
-                        ans_duration,
-                        turn_detector.turn_complete_reason,
-                    )
-
-                    # Transcribe answer via Groq Whisper STT
-                    transcript = await transcribe_answer(buffered_pcm)
-                    transcripts.append({
-                        "question_id": current_q["id"],
-                        "question": current_q["text"],
-                        "answer": transcript,
-                        "duration_seconds": round(ans_duration, 2),
-                    })
-
-                    current_q_idx += 1
-                    if current_q_idx < len(questions):
-                        # Play next question
-                        next_q = questions[current_q_idx]
-                        q_id = next_q["id"]
-                        wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
-                        logger.info("Advancing to question [%s]: %s", q_id, next_q["text"])
-
-                        is_streaming_bot_audio = True
-                        await send_audio_file(websocket, stream_sid, wav_file, q_id)
-                        is_streaming_bot_audio = False
-                        turn_detector.reset()
-                    else:
-                        # All questions answered!
-                        logger.info("All screening questions completed. Ending call.")
-                        # Brief sleep to allow last audio/acknowledgment to settle
-                        await asyncio.sleep(1.0)
-                        await finalize_session(reason="all_questions_completed")
+                    done = await handle_turn_completed()
+                    if done:
                         break
 
-            elif ev_type == "mark":
-                logger.debug("Playback mark received: %s", event.get("mark", {}).get("name"))
-
-            elif ev_type == "stop":
-                logger.info("Exotel event: stop received.")
+            elif ev_type in ("stop", "closed"):
+                logger.info("Exotel stop event received.")
                 await finalize_session(reason="exotel_stop_received")
                 break
+
+            elif ev_type == "mark":
+                mark_data = event.get("mark") or event.get("Mark") or {}
+                logger.info("Exotel mark received: %s", mark_data.get("name", ""))
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected by Exotel/client.")
