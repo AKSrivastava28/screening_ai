@@ -95,6 +95,7 @@ class TurnDetector:
         self.leftover_pcm = bytearray()
         self.start_time: Optional[float] = None
         self.last_speech_time: Optional[float] = None
+        self.consecutive_speech_chunks = 0
         if min_answer_seconds is not None:
             self.min_answer_seconds = min_answer_seconds
 
@@ -193,13 +194,16 @@ class TurnDetector:
 
             # State transitions based purely on acoustic speech probability
             if is_speech:
-                if not self.has_started_speaking:
+                self.consecutive_speech_chunks += 1
+                if not self.has_started_speaking and self.consecutive_speech_chunks >= 2:
                     logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
                     self.has_started_speaking = True
-                self.is_speaking_now = True
-                self.accumulated_silence_seconds = 0.0
-                self.last_speech_time = time.monotonic()
+                if self.has_started_speaking:
+                    self.is_speaking_now = True
+                    self.accumulated_silence_seconds = 0.0
+                    self.last_speech_time = time.monotonic()
             elif speech_prob < self.silence_threshold:
+                self.consecutive_speech_chunks = 0
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds

@@ -238,7 +238,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     current_q_idx = 0
     is_streaming_bot_audio = False
 
-    turn_detector = TurnDetector(min_answer_seconds=1.0, initial_silence_timeout=6.0)
+    turn_detector = TurnDetector(min_answer_seconds=2.5, initial_silence_timeout=6.0)
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
     total_candidate_audio_sec = 0.0
@@ -343,7 +343,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             is_streaming_bot_audio = False
             # Brief pause to let carrier audio playback buffer settle
             await asyncio.sleep(0.2)
-            turn_detector.reset(min_answer_seconds=1.0)
+            turn_detector.reset(min_answer_seconds=2.5)
             logger.info("Listening for candidate response to [%s]...", q_id)
             return False
         else:
@@ -425,7 +425,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 await send_audio_file(websocket, stream_sid, wav_file, q_id)
                 is_streaming_bot_audio = False
                 await asyncio.sleep(0.2)
-                turn_detector.reset(min_answer_seconds=1.0)
+                turn_detector.reset(min_answer_seconds=2.5)
                 logger.info("Listening for candidate response to [%s]...", q_id)
 
             elif ev_type == "media":
