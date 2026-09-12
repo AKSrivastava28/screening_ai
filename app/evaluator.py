@@ -191,36 +191,50 @@ async def generate_evaluation_report(
             ],
         }
     else:
-        try:
-            client = AsyncGroq(api_key=api_key)
-            completion = await client.chat.completions.create(
-                model=settings.GROQ_LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Here is the interview transcript:\n\n{formatted_qa}"},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-            )
+        client = AsyncGroq(api_key=api_key)
+        candidate_models = [settings.GROQ_LLM_MODEL]
+        for fallback in ("openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "groq/compound"):
+            if fallback not in candidate_models:
+                candidate_models.append(fallback)
 
-            if completion.usage:
-                prompt_tokens = completion.usage.prompt_tokens
-                completion_tokens = completion.usage.completion_tokens
+        last_error = None
+        for model_name in candidate_models:
+            try:
+                logger.info("Generating evaluation report with Groq model: %s", model_name)
+                completion = await client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Here is the interview transcript:\n\n{formatted_qa}"},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                )
 
-            content_text = completion.choices[0].message.content or "{}"
-            parsed_llm_response = json.loads(content_text)
-        except Exception as e:
-            logger.error("Error generating LLM evaluation report: %s", e)
+                if completion.usage:
+                    prompt_tokens = completion.usage.prompt_tokens
+                    completion_tokens = completion.usage.completion_tokens
+
+                content_text = completion.choices[0].message.content or "{}"
+                parsed_llm_response = json.loads(content_text)
+                logger.info("Successfully generated evaluation report using model: %s", model_name)
+                break
+            except Exception as e:
+                logger.warning("Model %s failed: %s. Trying next candidate...", model_name, e)
+                last_error = e
+
+        if not parsed_llm_response:
+            logger.error("All LLM candidates failed. Last error: %s", last_error)
             parsed_llm_response = {
                 "criteria": {
-                    "communication_clarity": {"score": 3, "justification": f"LLM error: {e}"},
-                    "experience_relevance": {"score": 3, "justification": f"LLM error: {e}"},
-                    "availability_notice_fit": {"score": 3, "justification": f"LLM error: {e}"},
-                    "compensation_fit": {"score": 3, "justification": f"LLM error: {e}"},
+                    "communication_clarity": {"score": 3, "justification": f"LLM error: {last_error}"},
+                    "experience_relevance": {"score": 3, "justification": f"LLM error: {last_error}"},
+                    "availability_notice_fit": {"score": 3, "justification": f"LLM error: {last_error}"},
+                    "compensation_fit": {"score": 3, "justification": f"LLM error: {last_error}"},
                 },
                 "overall_recommendation": {
                     "decision": "hold",
-                    "justification": f"Report fallback due to error: {e}",
+                    "justification": f"Report fallback due to error: {last_error}",
                 },
                 "key_observations": ["Report generation encountered error."],
             }

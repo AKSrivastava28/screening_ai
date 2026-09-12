@@ -67,6 +67,14 @@ async def on_startup() -> None:
     else:
         logger.info("GROQ_API_KEY not configured. Using pre-existing audio files.")
 
+    # Pre-load Silero VAD model into memory for zero latency
+    try:
+        from app.vad import get_silero_model
+        get_silero_model()
+        logger.info("Silero VAD pre-loaded successfully on startup.")
+    except Exception as e:
+        logger.warning("Could not pre-load Silero VAD model on startup: %s", e)
+
 
 class TriggerCallRequest(BaseModel):
     to_number: Optional[str] = None

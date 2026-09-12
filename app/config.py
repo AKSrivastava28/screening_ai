@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Groq Configuration
     GROQ_API_KEY: str = ""
-    GROQ_LLM_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_LLM_MODEL: str = "openai/gpt-oss-120b"
     GROQ_STT_MODEL: str = "whisper-large-v3-turbo"
     GROQ_TTS_MODEL: str = "canopylabs/orpheus-v1-english"
     GROQ_TTS_VOICE: str = "hannah"

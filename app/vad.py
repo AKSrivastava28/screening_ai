@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import time
 from typing import Optional
 import numpy as np
@@ -16,10 +17,22 @@ _SILERO_MODEL: Optional[torch.nn.Module] = None
 
 
 def get_silero_model() -> torch.nn.Module:
-    """Load and cache the Silero VAD model."""
+    """Load and cache the Silero VAD model from local file or torch.hub fallback."""
     global _SILERO_MODEL
     if _SILERO_MODEL is None:
-        logger.info("Loading Silero VAD model...")
+        local_model_path = Path(__file__).resolve().parent.parent / "models" / "silero_vad.jit"
+        if local_model_path.exists():
+            logger.info("Loading Silero VAD model from local bundle: %s", local_model_path)
+            try:
+                model = torch.jit.load(str(local_model_path), map_location="cpu")
+                model.eval()
+                _SILERO_MODEL = model
+                logger.info("Silero VAD model loaded successfully from local file.")
+                return _SILERO_MODEL
+            except Exception as e:
+                logger.warning("Failed to load local Silero model (%s), trying torch.hub...", e)
+
+        logger.info("Loading Silero VAD model via torch.hub...")
         model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
             model="silero_vad",

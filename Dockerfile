@@ -16,8 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Pre-generate static question audio files
-RUN python generate_question_audio.py --mock
+# Ensure reports and models directories exist
+RUN mkdir -p /app/reports /app/models
 
 EXPOSE 8000
 

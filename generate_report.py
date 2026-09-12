@@ -102,7 +102,8 @@ async def run_report(
     print("-" * 60)
     print("CRITERIA SCORES:")
     for k, v in crit.items():
-        print(f"  - {k.replace('_', ' ').title():<26}: {v.get('score')}/5 — {v.get('justification')}")
+        clean_just = str(v.get("justification", "")).encode("ascii", errors="replace").decode("ascii")
+        print(f"  - {k.replace('_', ' ').title():<26}: {v.get('score')}/5 - {clean_just}")
     print("-" * 60)
     print(f"TOTAL ESTIMATED COST: ${cost.get('total_estimated_cost_usd'):.4f}")
     print("=" * 60)
