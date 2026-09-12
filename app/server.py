@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from app.audio_utils import chunk_pcm_for_exotel, wav_to_pcm16_bytes
@@ -459,6 +459,150 @@ async def call_status_webhook(request: Request) -> JSONResponse:
         status_code=200,
         content={"success": True, "call_sid": key, "status": status},
     )
+
+
+@app.get("/reports")
+async def list_reports() -> JSONResponse:
+    """List all candidate evaluation reports generated on this instance."""
+    reports_dir = settings.REPORTS_DIR
+    if not reports_dir.exists():
+        return JSONResponse(content={"total": 0, "reports": []})
+
+    import os
+    files = sorted(reports_dir.glob("*.json"), key=os.path.getmtime, reverse=True)
+    summary_list = []
+    for f in files:
+        try:
+            with open(f, "r", encoding="utf-8") as jf:
+                data = json.load(jf)
+            summary_list.append({
+                "call_sid": data.get("call_sid", f.stem),
+                "candidate_phone": data.get("candidate_phone", "N/A"),
+                "recommendation": data.get("overall_recommendation", {}).get("decision", "N/A"),
+                "duration_seconds": data.get("call_duration_seconds", 0),
+                "total_cost_usd": data.get("cost_estimate", {}).get("total_estimated_cost_usd", 0),
+                "view_url": f"/reports/{f.stem}/view",
+                "json_url": f"/reports/{f.stem}",
+                "markdown_url": f"/reports/{f.stem}/markdown",
+            })
+        except Exception:
+            continue
+    return JSONResponse(content={"total": len(summary_list), "reports": summary_list})
+
+
+@app.get("/reports/{call_sid}")
+async def get_report(call_sid: str) -> JSONResponse:
+    """Get the raw JSON evaluation report for a specific call SID."""
+    json_path = settings.REPORTS_DIR / f"{call_sid}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail=f"Report not found for call {call_sid}")
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return JSONResponse(content=data)
+
+
+@app.get("/reports/{call_sid}/markdown", response_class=PlainTextResponse)
+async def get_report_markdown(call_sid: str) -> PlainTextResponse:
+    """Get the Markdown-formatted evaluation report."""
+    md_path = settings.REPORTS_DIR / f"{call_sid}.md"
+    if not md_path.exists():
+        raise HTTPException(status_code=404, detail=f"Report not found for call {call_sid}")
+    with open(md_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return PlainTextResponse(content=content)
+
+
+@app.get("/reports/{call_sid}/view", response_class=HTMLResponse)
+async def view_report_html(call_sid: str) -> HTMLResponse:
+    """View candidate screening report nicely formatted in HTML in your browser."""
+    json_path = settings.REPORTS_DIR / f"{call_sid}.json"
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail=f"Report not found for call {call_sid}")
+    with open(json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    decision = str(data.get("overall_recommendation", {}).get("decision", "HOLD")).upper()
+    badge_color = "#10b981" if decision == "PROCEED" else ("#ef4444" if decision == "REJECT" else "#f59e0b")
+    rec_just = data.get("overall_recommendation", {}).get("justification", "")
+    crit = data.get("criteria", {})
+    cost = data.get("cost_estimate", {})
+    transcript = data.get("transcript", [])
+    observations = data.get("key_observations", [])
+
+    rows_html = "".join(
+        f"<tr><td style='padding:10px;border-bottom:1px solid #e5e7eb;font-weight:600;'>{k.replace('_', ' ').title()}</td>"
+        f"<td style='padding:10px;border-bottom:1px solid #e5e7eb;text-align:center;'><strong>{v.get('score', 'N/A')} / 5</strong></td>"
+        f"<td style='padding:10px;border-bottom:1px solid #e5e7eb;color:#4b5563;'>{v.get('justification', '')}</td></tr>"
+        for k, v in crit.items()
+    )
+
+    obs_html = "".join(f"<li style='margin-bottom:6px;'>{o}</li>" for o in observations)
+
+    qa_html = "".join(
+        f"<div style='margin-bottom:16px;padding:12px;background:#f9fafb;border-radius:8px;border-left:4px solid #3b82f6;'>"
+        f"<p style='margin:0 0 6px 0;font-weight:600;color:#1e3a8a;'>Q ({item.get('question_id', '')}): {item.get('question', '')}</p>"
+        f"<p style='margin:0;color:#1f2937;'><strong>Candidate:</strong> {item.get('answer', '[No response]')}</p>"
+        f"</div>"
+        for item in transcript
+    )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Candidate Screening Report - {call_sid}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f3f4f6; margin: 0; padding: 24px; color: #111827; }}
+    .container {{ max-width: 860px; margin: 0 auto; background: #ffffff; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 32px; }}
+    .badge {{ display: inline-block; padding: 6px 16px; border-radius: 9999px; color: white; font-weight: 700; font-size: 14px; background: {badge_color}; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+    th {{ background: #f9fafb; padding: 10px; text-align: left; font-size: 13px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb; }}
+    .cost-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }}
+    .cost-card {{ background: #f9fafb; padding: 12px 16px; border-radius: 8px; border: 1px solid #e5e7eb; }}
+    .cost-card div:first-child {{ font-size: 12px; color: #6b7280; text-transform: uppercase; font-weight: 600; }}
+    .cost-card div:last-child {{ font-size: 20px; color: #111827; font-weight: 700; margin-top: 4px; }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e5e7eb; padding-bottom:16px;">
+      <div>
+        <h1 style="margin:0 0 6px 0; font-size:24px;">Candidate Screening Report</h1>
+        <p style="margin:0; color:#6b7280; font-size:14px;">Call SID: <code>{call_sid}</code> | Phone: <strong>{data.get('candidate_phone', 'N/A')}</strong></p>
+      </div>
+      <div>
+        <span class="badge">{decision}</span>
+      </div>
+    </div>
+
+    <div style="margin-top:20px; padding:16px; background:#eff6ff; border-radius:8px;">
+      <strong>Recommendation Justification:</strong> {rec_just}
+    </div>
+
+    <h3 style="margin-top:28px; margin-bottom:8px;">Evaluation Criteria (1-5 Scale)</h3>
+    <table>
+      <thead><tr><th>Criterion</th><th style="text-align:center;">Score</th><th>Justification</th></tr></thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+
+    <h3 style="margin-top:28px; margin-bottom:8px;">Key Observations</h3>
+    <ul style="color:#374151; padding-left:20px;">{obs_html}</ul>
+
+    <h3 style="margin-top:28px; margin-bottom:8px;">Estimated Call Cost Breakdown</h3>
+    <div class="cost-grid">
+      <div class="cost-card"><div>Telephony</div><div>${cost.get('telephony_cost_usd', 0):.4f}</div></div>
+      <div class="cost-card"><div>Whisper STT</div><div>${cost.get('stt_cost_usd', 0):.4f}</div></div>
+      <div class="cost-card"><div>LLaMA 3.3 LLM</div><div>${cost.get('llm_cost_usd', 0):.4f}</div></div>
+      <div class="cost-card" style="border-color:#10b981; background:#ecfdf5;"><div>Total Cost</div><div style="color:#059669;">${cost.get('total_estimated_cost_usd', 0):.4f}</div></div>
+    </div>
+
+    <h3 style="margin-top:28px; margin-bottom:12px;">Full Screening Transcript</h3>
+    {qa_html}
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 def start() -> None:

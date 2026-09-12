@@ -126,3 +126,52 @@ def test_websocket_media_session(client: TestClient, tmp_path: Path) -> None:
                 "stop": {"call_sid": "CAtestcall999", "reason": "callended"},
             })
         )
+
+
+def test_reports_endpoints(client: TestClient) -> None:
+    # 1. Test /reports listing
+    resp = client.get("/reports")
+    assert resp.status_code == 200
+    assert "reports" in resp.json()
+
+    # Create dummy report for testing
+    settings.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    dummy_sid = "CALL_TEST_REPORT_123"
+    dummy_report = {
+        "call_sid": dummy_sid,
+        "candidate_phone": "+919876543210",
+        "call_duration_seconds": 120.0,
+        "overall_recommendation": {"decision": "proceed", "justification": "Strong fit"},
+        "criteria": {
+            "communication_clarity": {"score": 4, "justification": "Clear voice"},
+        },
+        "cost_estimate": {"total_estimated_cost_usd": 0.0035},
+        "transcript": [{"question_id": "q1", "question": "Q?", "answer": "A!"}],
+    }
+    with open(settings.REPORTS_DIR / f"{dummy_sid}.json", "w", encoding="utf-8") as f:
+        json.dump(dummy_report, f)
+    with open(settings.REPORTS_DIR / f"{dummy_sid}.md", "w", encoding="utf-8") as f:
+        f.write("# Dummy Report")
+
+    try:
+        # Test GET /reports/{call_sid}
+        json_resp = client.get(f"/reports/{dummy_sid}")
+        assert json_resp.status_code == 200
+        assert json_resp.json()["call_sid"] == dummy_sid
+
+        # Test GET /reports/{call_sid}/markdown
+        md_resp = client.get(f"/reports/{dummy_sid}/markdown")
+        assert md_resp.status_code == 200
+        assert "# Dummy Report" in md_resp.text
+
+        # Test GET /reports/{call_sid}/view (HTML)
+        view_resp = client.get(f"/reports/{dummy_sid}/view")
+        assert view_resp.status_code == 200
+        assert "Candidate Screening Report" in view_resp.text
+        assert "PROCEED" in view_resp.text
+    finally:
+        # Clean up dummy report
+        for ext in (".json", ".md"):
+            p = settings.REPORTS_DIR / f"{dummy_sid}{ext}"
+            if p.exists():
+                p.unlink()
