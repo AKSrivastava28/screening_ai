@@ -55,8 +55,8 @@ class TurnDetector:
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
         initial_silence_timeout: float = 4.0,
-        speech_threshold: float = 0.25,
-        silence_threshold: float = 0.15,
+        speech_threshold: float = 0.35,
+        silence_threshold: float = 0.20,
     ) -> None:
         self.sample_rate = sample_rate
         self.max_silence_seconds = (
@@ -188,7 +188,7 @@ class TurnDetector:
                 speech_prob = model(audio_float32, self.sample_rate).item()
 
             rms = float(np.sqrt(np.mean(audio_int16.astype(np.float32) ** 2)))
-            is_speech = (speech_prob >= self.speech_threshold) or (rms >= 350.0)
+            is_speech = speech_prob >= self.speech_threshold
 
             self.total_answer_seconds += self.chunk_duration_seconds
 
@@ -200,7 +200,7 @@ class TurnDetector:
                 self.is_speaking_now = True
                 self.accumulated_silence_seconds = 0.0
                 self.last_speech_time = time.monotonic()
-            elif speech_prob < self.silence_threshold and rms < 200.0:
+            elif speech_prob < self.silence_threshold:
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds
