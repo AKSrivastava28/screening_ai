@@ -293,23 +293,25 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             len(buffered_pcm),
         )
 
-        # Check if candidate spoke or if turn timed out
+        # Always transcribe candidate audio via Groq Whisper if audio was buffered (>= 0.4s)
+        transcript = ""
         is_inaudible = False
-        if turn_detector.turn_complete_reason == "initial_silence_timeout" or not turn_detector.speech_detected:
+        if len(buffered_pcm) >= 6400:  # >= 0.4s of 8kHz 16-bit PCM
+            transcript = await transcribe_answer(buffered_pcm)
+            clean_text = transcript.strip().rstrip(".").lower()
+            if not transcript.strip() or clean_text in ("", "thank you", "thanks", "you", "[unintelligible / silence]", "[no speech detected]"):
+                if not turn_detector.speech_detected and ans_duration < 1.0:
+                    transcript = "[No speech detected]"
+                else:
+                    transcript = "[No clear response recorded]"
+                is_inaudible = True
+            elif transcript.startswith("[No ") or transcript.startswith("[Transcription error"):
+                is_inaudible = True
+            else:
+                is_inaudible = False
+        else:
             transcript = "[No speech detected]"
             is_inaudible = True
-        else:
-            # Transcribe answer via Groq Whisper STT
-            transcript = await transcribe_answer(buffered_pcm)
-            if not transcript.strip() or transcript.strip() in (".", "..", "..."):
-                transcript = "[No clear response recorded]"
-                is_inaudible = True
-            elif ans_duration < 1.2 and transcript.strip().rstrip(".").lower() in ("thank you", "thanks", "you"):
-                # Filter out Whisper hallucinations on faint background noise
-                transcript = "[No clear response recorded]"
-                is_inaudible = True
-            elif transcript.startswith("[No ") or transcript.startswith("[Unintelligible"):
-                is_inaudible = True
 
         logger.info("Transcribed [%s]: '%s' (is_inaudible=%s)", current_q["id"], transcript, is_inaudible)
         transcripts.append({
