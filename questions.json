@@ -1,0 +1,11 @@
+[
+  {"id": "q1", "text": "This call will be recorded for evaluation purposes, is that okay with you?"},
+  {"id": "q2", "text": "Could you briefly describe your current role and responsibilities?"},
+  {"id": "q3", "text": "How many years of total experience do you have, and how much of that is relevant to this role?"},
+  {"id": "q4", "text": "What's prompting you to look for a new opportunity right now?"},
+  {"id": "q5", "text": "What's your current notice period, and how soon could you join if selected?"},
+  {"id": "q6", "text": "What's your current CTC, and what are you expecting for this role?"},
+  {"id": "q7", "text": "Are you open to the work location and mode for this role, and would you consider relocating?"},
+  {"id": "q8", "text": "Could you share an example of a challenging technical project you led recently and how you resolved key obstacles?"},
+  {"id": "q9", "text": "That's all my questions. Do you have anything you'd like to ask us? Thanks for your time today."}
+]
