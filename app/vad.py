@@ -54,7 +54,7 @@ class TurnDetector:
         max_silence_seconds: Optional[float] = None,
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
-        initial_silence_timeout: float = 6.0,
+        initial_silence_timeout: float = 12.0,
         speech_threshold: float = 0.25,
         silence_threshold: float = 0.15,
     ) -> None:
@@ -83,7 +83,11 @@ class TurnDetector:
             self.model = get_silero_model()
         return self.model
 
-    def reset(self, min_answer_seconds: Optional[float] = None) -> None:
+    def reset(
+        self,
+        min_answer_seconds: Optional[float] = None,
+        initial_silence_timeout: Optional[float] = None,
+    ) -> None:
         """Reset state for a new question/turn."""
         self.has_started_speaking = False
         self.is_speaking_now = False
@@ -95,9 +99,10 @@ class TurnDetector:
         self.leftover_pcm = bytearray()
         self.start_time: Optional[float] = None
         self.last_speech_time: Optional[float] = None
-        self.consecutive_speech_chunks = 0
         if min_answer_seconds is not None:
             self.min_answer_seconds = min_answer_seconds
+        if initial_silence_timeout is not None:
+            self.initial_silence_timeout = initial_silence_timeout
 
         if self.model is not None and hasattr(self.model, "reset_states"):
             self.model.reset_states()
@@ -194,16 +199,13 @@ class TurnDetector:
 
             # State transitions based purely on acoustic speech probability
             if is_speech:
-                self.consecutive_speech_chunks += 1
-                if not self.has_started_speaking and self.consecutive_speech_chunks >= 2:
+                if not self.has_started_speaking:
                     logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
                     self.has_started_speaking = True
-                if self.has_started_speaking:
-                    self.is_speaking_now = True
-                    self.accumulated_silence_seconds = 0.0
-                    self.last_speech_time = time.monotonic()
+                self.is_speaking_now = True
+                self.accumulated_silence_seconds = 0.0
+                self.last_speech_time = time.monotonic()
             elif speech_prob < self.silence_threshold:
-                self.consecutive_speech_chunks = 0
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds

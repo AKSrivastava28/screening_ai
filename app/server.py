@@ -238,7 +238,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     current_q_idx = 0
     is_streaming_bot_audio = False
 
-    turn_detector = TurnDetector(min_answer_seconds=2.5, initial_silence_timeout=6.0)
+    turn_detector = TurnDetector(min_answer_seconds=2.5, initial_silence_timeout=12.0)
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
     total_candidate_audio_sec = 0.0
