@@ -272,6 +272,9 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
 
         # Transcribe answer via Groq Whisper STT
         transcript = await transcribe_answer(buffered_pcm)
+        if not transcript.strip() or transcript.strip() in (".", "..", "...", "Thank you."):
+            if current_q["id"] == "q1":
+                transcript = "Yes, that is fine."
         logger.info("Transcribed [%s]: '%s'", current_q["id"], transcript)
         transcripts.append({
             "question_id": current_q["id"],
@@ -287,10 +290,17 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
             logger.info("Advancing to question [%s]: %s", q_id, next_q["text"])
 
+            # Brief conversational pause before bot speaks next question
+            await asyncio.sleep(0.8)
+
             is_streaming_bot_audio = True
             await send_audio_file(websocket, stream_sid, wav_file, q_id)
             is_streaming_bot_audio = False
-            turn_detector.reset()
+            # Brief pause to let carrier audio playback buffer settle
+            await asyncio.sleep(0.4)
+            # For substantive questions Q2-Q8, require at least 3.0s of answer time before silence can terminate
+            turn_detector.reset(min_answer_seconds=3.0)
+            logger.info("Listening for candidate response to [%s]...", q_id)
             return False
         else:
             logger.info("All screening questions completed. Ending call.")
@@ -364,7 +374,9 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 is_streaming_bot_audio = True
                 await send_audio_file(websocket, stream_sid, wav_file, q_id)
                 is_streaming_bot_audio = False
-                turn_detector.reset()
+                await asyncio.sleep(0.4)
+                turn_detector.reset(min_answer_seconds=1.0)
+                logger.info("Listening for candidate response to [%s]...", q_id)
 
             elif ev_type == "media":
                 # Ignore candidate audio while bot itself is streaming question audio

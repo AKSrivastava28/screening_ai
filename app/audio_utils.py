@@ -177,3 +177,35 @@ def generate_mock_speech_wav(
     wav_bytes = pcm16_to_wav_bytes(bytes(pcm_data), sample_rate=sample_rate, channels=1)
     with open(output_file, "wb") as f:
         f.write(wav_bytes)
+
+
+def normalize_audio_pcm(
+    pcm_bytes: bytes,
+    target_rms: float = 1200.0,
+    max_gain: float = 50.0,
+    noise_floor_rms: float = 1.0,
+) -> bytes:
+    """Apply software Automatic Gain Control (AGC) to raw 16-bit linear PCM audio.
+
+    Brings faint cellular telephony audio up to clear audible levels for VAD and STT.
+    """
+    if not pcm_bytes or len(pcm_bytes) < 2:
+        return pcm_bytes
+
+    import numpy as np
+
+    audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    current_rms = float(np.sqrt(np.mean(audio ** 2)))
+
+    # Ignore pure digital silence to avoid boosting zero-noise floor
+    if current_rms <= noise_floor_rms:
+        return pcm_bytes
+
+    # Calculate gain required to bring audio up to target RMS
+    gain = min(target_rms / current_rms, max_gain)
+    if gain <= 1.0:
+        return pcm_bytes
+
+    boosted = audio * gain
+    np.clip(boosted, -32768, 32767, out=boosted)
+    return boosted.astype(np.int16).tobytes()

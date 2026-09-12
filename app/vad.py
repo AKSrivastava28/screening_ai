@@ -9,6 +9,7 @@ from typing import Optional
 import numpy as np
 import torch
 
+from app.audio_utils import normalize_audio_pcm
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,9 @@ class TurnDetector:
         sample_rate: int = 8000,
         max_silence_seconds: Optional[float] = None,
         max_answer_seconds: Optional[float] = None,
+        min_answer_seconds: float = 0.0,
         initial_silence_timeout: float = 12.0,
-        speech_threshold: float = 0.30,
+        speech_threshold: float = 0.35,
         silence_threshold: float = 0.20,
     ) -> None:
         self.sample_rate = sample_rate
@@ -63,6 +65,7 @@ class TurnDetector:
         self.max_answer_seconds = (
             max_answer_seconds if max_answer_seconds is not None else settings.MAX_ANSWER_SECONDS
         )
+        self.min_answer_seconds = min_answer_seconds
         self.initial_silence_timeout = initial_silence_timeout
         self.speech_threshold = speech_threshold
         self.silence_threshold = silence_threshold
@@ -80,7 +83,7 @@ class TurnDetector:
             self.model = get_silero_model()
         return self.model
 
-    def reset(self) -> None:
+    def reset(self, min_answer_seconds: Optional[float] = None) -> None:
         """Reset state for a new question/turn."""
         self.has_started_speaking = False
         self.is_speaking_now = False
@@ -92,6 +95,8 @@ class TurnDetector:
         self.leftover_pcm = bytearray()
         self.start_time: Optional[float] = None
         self.last_speech_time: Optional[float] = None
+        if min_answer_seconds is not None:
+            self.min_answer_seconds = min_answer_seconds
 
         if self.model is not None and hasattr(self.model, "reset_states"):
             self.model.reset_states()
@@ -110,15 +115,17 @@ class TurnDetector:
         now = time.monotonic()
         wall_elapsed = now - self.start_time
 
-        # 1. Candidate spoke and silence exceeded max_silence_seconds
+        # 1. Candidate spoke and silence exceeded max_silence_seconds (with min answer constraint)
         if self.has_started_speaking and self.last_speech_time is not None:
             silence_elapsed = now - self.last_speech_time
-            if silence_elapsed >= self.max_silence_seconds:
+            if wall_elapsed >= self.min_answer_seconds and silence_elapsed >= self.max_silence_seconds:
                 self.is_turn_complete = True
                 self.turn_complete_reason = "silence_timeout"
                 logger.info(
-                    "VAD: Silence timeout reached (%.1fs silence after speech)",
+                    "VAD: Silence timeout reached (%.1fs silence after speech, total=%.1fs, min=%.1fs)",
                     silence_elapsed,
+                    wall_elapsed,
+                    self.min_answer_seconds,
                 )
                 return True
 
@@ -156,11 +163,14 @@ class TurnDetector:
         if self.start_time is None:
             self.start_time = time.monotonic()
 
-        # Buffer total audio for later transcription
-        self.buffered_pcm.extend(pcm_bytes)
+        # Apply software Automatic Gain Control (AGC) to boost faint phone audio
+        boosted_chunk = normalize_audio_pcm(pcm_bytes, target_rms=1200.0, max_gain=40.0)
+
+        # Buffer boosted audio for later Whisper transcription
+        self.buffered_pcm.extend(boosted_chunk)
 
         # Prepend any leftovers from previous frame
-        combined = self.leftover_pcm + pcm_bytes
+        combined = self.leftover_pcm + boosted_chunk
         total_len = len(combined)
 
         model = self._ensure_model()
@@ -197,13 +207,18 @@ class TurnDetector:
 
             # Check termination conditions:
             # 1. Candidate finished speaking and silence exceeded MAX_SILENCE_SECONDS
-            if self.has_started_speaking and self.accumulated_silence_seconds >= self.max_silence_seconds:
+            if (
+                self.has_started_speaking
+                and self.total_answer_seconds >= self.min_answer_seconds
+                and self.accumulated_silence_seconds >= self.max_silence_seconds
+            ):
                 self.is_turn_complete = True
                 self.turn_complete_reason = "silence_timeout"
                 logger.info(
-                    "VAD: End of turn detected (silence >= %.1fs, total=%.1fs)",
+                    "VAD: End of turn detected (silence >= %.1fs, total=%.1fs, min=%.1fs)",
                     self.max_silence_seconds,
                     self.total_answer_seconds,
+                    self.min_answer_seconds,
                 )
                 break
 
