@@ -54,9 +54,9 @@ class TurnDetector:
         max_silence_seconds: Optional[float] = None,
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
-        initial_silence_timeout: float = 7.0,
-        speech_threshold: float = 0.20,
-        silence_threshold: float = 0.10,
+        initial_silence_timeout: float = 6.0,
+        speech_threshold: float = 0.25,
+        silence_threshold: float = 0.15,
     ) -> None:
         self.sample_rate = sample_rate
         self.max_silence_seconds = (
@@ -187,36 +187,40 @@ class TurnDetector:
             with torch.no_grad():
                 speech_prob = model(audio_float32, self.sample_rate).item()
 
-            rms = float(np.sqrt(np.mean(audio_int16.astype(np.float32) ** 2)))
-            is_speech = (speech_prob >= self.speech_threshold) or (rms >= 300.0)
+            is_speech = speech_prob >= self.speech_threshold
 
             self.total_answer_seconds += self.chunk_duration_seconds
 
-            # State transitions
+            # State transitions based purely on acoustic speech probability
             if is_speech:
                 if not self.has_started_speaking:
-                    logger.info("VAD: Candidate started speaking (prob=%.2f, rms=%.1f)", speech_prob, rms)
+                    logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
                     self.has_started_speaking = True
                 self.is_speaking_now = True
                 self.accumulated_silence_seconds = 0.0
                 self.last_speech_time = time.monotonic()
-            elif speech_prob < self.silence_threshold and rms < 200.0:
+            elif speech_prob < self.silence_threshold:
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds
 
             # Check termination conditions:
-            # 1. Candidate finished speaking and silence exceeded MAX_SILENCE_SECONDS
+            # 1. Candidate finished speaking and silence exceeded MAX_SILENCE_SECONDS (frame or wallclock)
+            now = time.monotonic()
+            silence_wallclock = (now - self.last_speech_time) if self.last_speech_time is not None else 0.0
             if (
                 self.has_started_speaking
                 and self.total_answer_seconds >= self.min_answer_seconds
-                and self.accumulated_silence_seconds >= self.max_silence_seconds
+                and (
+                    self.accumulated_silence_seconds >= self.max_silence_seconds
+                    or silence_wallclock >= self.max_silence_seconds
+                )
             ):
                 self.is_turn_complete = True
                 self.turn_complete_reason = "silence_timeout"
                 logger.info(
-                    "VAD: End of turn detected (silence >= %.1fs, total=%.1fs, min=%.1fs)",
-                    self.max_silence_seconds,
+                    "VAD: End of turn detected (silence=%.2fs, total=%.1fs, min=%.1fs)",
+                    max(self.accumulated_silence_seconds, silence_wallclock),
                     self.total_answer_seconds,
                     self.min_answer_seconds,
                 )
