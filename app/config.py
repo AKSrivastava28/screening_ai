@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # Dynamic Follow-Up Settings
     ENABLE_DYNAMIC_FOLLOWUP: bool = True
-    FOLLOWUP_MAX_TIMEOUT_SECONDS: float = 3.0
+    FOLLOWUP_MAX_TIMEOUT_SECONDS: float = 7.5
     FOLLOWUP_VOICE: str = "en-IN-NeerjaNeural"
 
     # Cost Estimation Rates (USD)

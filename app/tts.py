@@ -19,7 +19,7 @@ async def synthesize_followup_speech(
     text: str,
     output_path: Path,
     voice: Optional[str] = None,
-    timeout_seconds: float = 3.5,
+    timeout_seconds: float = 12.0,
 ) -> bool:
     """Synthesize speech using Edge-TTS into an 8kHz 16-bit mono WAV.
 

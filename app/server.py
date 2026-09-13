@@ -177,14 +177,25 @@ async def trigger_call(req: TriggerCallRequest = TriggerCallRequest()) -> Dict[s
         if len(clean_phone) >= 10:
             pending_candidates[clean_phone[-10:]] = cand_meta
 
-    # Pre-synthesize Q1 audio with candidate name & role while phone is ringing
+    # Pre-synthesize Q1, Q2, and Conclusion audio with candidate name & role while phone is ringing
     clean_suffix = clean_phone[-10:] if clean_phone else "dyn"
     q1_path = settings.AUDIO_DIR / f"q1_{clean_suffix}.wav"
     q1_prompt = (
         f"Hi {cand_name}! Thank you for taking our call. You have applied for the {job_role} role. "
         f"To begin, could you please tell me about your highest qualifications and educational background?"
     )
-    asyncio.create_task(synthesize_followup_speech(q1_prompt, q1_path))
+    asyncio.create_task(synthesize_followup_speech(q1_prompt, q1_path, timeout_seconds=15.0))
+
+    q2_path = settings.AUDIO_DIR / f"q2_{clean_suffix}.wav"
+    q2_prompt = f"Got it, thank you. And how many years of relevant experience do you have in {job_role}?"
+    asyncio.create_task(synthesize_followup_speech(q2_prompt, q2_path, timeout_seconds=15.0))
+
+    conc_path = settings.AUDIO_DIR / f"conclusion_{clean_suffix}.wav"
+    conc_prompt = (
+        f"Thank you for sharing your responses, {cand_name}. That concludes our screening call "
+        f"for the {job_role} role. We will evaluate your profile and get back to you shortly. Have a great day!"
+    )
+    asyncio.create_task(synthesize_followup_speech(conc_prompt, conc_path, timeout_seconds=15.0))
 
     try:
         result = await exotel_client.trigger_screening_call(
@@ -387,28 +398,14 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                     q1_dyn = q_obj["dyn_file"]
                     if not q1_dyn.exists() or q1_dyn.stat().st_size < 100:
                         logger.info("Synthesizing dynamic Q1 speech for %s (%s)...", candidate_name, job_role)
-                        await synthesize_followup_speech(q_obj["text"], q1_dyn, timeout_seconds=3.5)
+                        await synthesize_followup_speech(q_obj["text"], q1_dyn, timeout_seconds=12.0)
                     wav_file = q1_dyn if (q1_dyn.exists() and q1_dyn.stat().st_size > 100) else q_obj["fallback_file"]
-
-                    # Concurrently pre-synthesize Q2 while candidate answers Q1!
-                    q2_dyn = screening_questions[1]["dyn_file"]
-                    if not q2_dyn.exists():
-                        asyncio.create_task(synthesize_followup_speech(screening_questions[1]["text"], q2_dyn))
                 else:
                     q2_dyn = q_obj["dyn_file"]
                     if not q2_dyn.exists() or q2_dyn.stat().st_size < 100:
                         logger.info("Synthesizing dynamic Q2 speech for %s...", job_role)
-                        await synthesize_followup_speech(q_obj["text"], q2_dyn, timeout_seconds=3.0)
+                        await synthesize_followup_speech(q_obj["text"], q2_dyn, timeout_seconds=12.0)
                     wav_file = q2_dyn if (q2_dyn.exists() and q2_dyn.stat().st_size > 100) else q_obj["fallback_file"]
-
-                    # Concurrently pre-synthesize conclusion while candidate answers Q2!
-                    conclusion_dyn = settings.AUDIO_DIR / f"conclusion_{clean_suffix}.wav"
-                    conclusion_text = (
-                        f"Thank you for sharing your responses, {candidate_name}. That concludes our screening call "
-                        f"for the {job_role} role. We will evaluate your profile and get back to you shortly. Have a great day!"
-                    )
-                    if not conclusion_dyn.exists():
-                        asyncio.create_task(synthesize_followup_speech(conclusion_text, conclusion_dyn))
 
                 logger.info("Orchestrator: Playing dynamic question [%s]: %s", q_id, q_obj["text"])
                 await play_audio_and_wait(f"{q_id}_end", wav_file, max_wait=35.0 if idx == 0 else 15.0)
@@ -465,14 +462,14 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                         f_text = await generate_followup_question(
                             q_obj["text"],
                             transcript,
-                            timeout_seconds=settings.FOLLOWUP_MAX_TIMEOUT_SECONDS,
+                            timeout_seconds=4.0,
                         )
                         if not f_text:
                             return None
                         tts_ok = await synthesize_followup_speech(
                             f_text,
                             followup_file,
-                            timeout_seconds=settings.FOLLOWUP_MAX_TIMEOUT_SECONDS,
+                            timeout_seconds=7.5,
                         )
                         if tts_ok and followup_file.exists():
                             return f_text, followup_file
@@ -488,7 +485,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
 
                     followup_result = None
                     try:
-                        followup_result = await asyncio.wait_for(followup_task, timeout=2.5)
+                        followup_result = await asyncio.wait_for(followup_task, timeout=7.5)
                     except (asyncio.TimeoutError, Exception) as f_err:
                         logger.warning("Follow-up audio not ready in time (%s). Proceeding cleanly.", f_err)
 
