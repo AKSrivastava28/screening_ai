@@ -111,7 +111,13 @@ def load_questions() -> List[Dict[str, str]]:
         return json.load(f)
 
 
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root_endpoint() -> Dict[str, str]:
+    """Root endpoint for Render deployment health probes and status checks."""
+    return {"status": "healthy", "service": "screening-ai-voicebot", "version": "1.0.0"}
+
+
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check() -> Dict[str, Any]:
     """Health check endpoint exposing system status and audio readiness."""
     questions = load_questions()

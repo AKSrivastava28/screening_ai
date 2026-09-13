@@ -4,6 +4,7 @@ services:
     runtime: python
     region: oregon
     plan: free
+    healthCheckPath: /health
     buildCommand: pip install -r requirements.txt && python generate_question_audio.py --mock
     startCommand: uvicorn app.server:app --host 0.0.0.0 --port $PORT
     envVars:
