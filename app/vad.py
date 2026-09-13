@@ -205,7 +205,7 @@ class TurnDetector:
                 self.is_speaking_now = True
                 self.accumulated_silence_seconds = 0.0
                 self.last_speech_time = time.monotonic()
-            elif speech_prob < self.silence_threshold:
+            else:
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds

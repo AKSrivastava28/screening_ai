@@ -291,7 +291,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     current_q_idx = 0
     is_streaming_bot_audio = False
 
-    turn_detector = TurnDetector(min_answer_seconds=1.5, initial_silence_timeout=12.0)
+    turn_detector = TurnDetector(min_answer_seconds=1.0, initial_silence_timeout=12.0)
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
     total_candidate_audio_sec = 0.0
@@ -428,7 +428,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 await play_audio_and_wait(f"{q_id}_end", wav_file, max_wait=35.0 if idx == 0 else 15.0)
 
                 # Reset VAD and listen
-                turn_detector.reset(min_answer_seconds=1.5)
+                turn_detector.reset(min_answer_seconds=1.0)
                 turn_completed_event.clear()
                 logger.info("Listening for candidate response to [%s]...", q_id)
 
