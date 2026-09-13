@@ -278,88 +278,103 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
         except Exception as err:
             logger.error("Failed to generate evaluation report: %s", err)
 
-    async def handle_turn_completed() -> bool:
-        nonlocal current_q_idx, total_candidate_audio_sec, is_streaming_bot_audio
-        buffered_pcm = turn_detector.get_audio_bytes()
-        ans_duration = len(buffered_pcm) / (8000 * 2)
-        total_candidate_audio_sec += ans_duration
+    mark_events: Dict[str, asyncio.Event] = {}
+    turn_completed_event: asyncio.Event = asyncio.Event()
+    is_bot_speaking: bool = True
+    orchestrator_task: Optional[asyncio.Task] = None
 
-        current_q = questions[current_q_idx]
-        logger.info(
-            "Candidate answer completed for [%s] (Reason: %s). Audio: %.2fs (%d bytes).",
-            current_q["id"],
-            turn_detector.turn_complete_reason,
-            ans_duration,
-            len(buffered_pcm),
-        )
+    async def play_audio_and_wait(mark_name: str, wav_file: Path, max_wait: float = 35.0) -> None:
+        nonlocal is_bot_speaking
+        is_bot_speaking = True
+        ev = asyncio.Event()
+        mark_events[mark_name] = ev
+        await send_audio_file(websocket, stream_sid, wav_file, mark_name)
+        wait_limit = 0.5 if settings.STREAM_CHUNK_INTERVAL_SECONDS <= 0 else max_wait
+        try:
+            logger.info("Waiting for Exotel mark [%s] confirmation (max %.1fs)...", mark_name, wait_limit)
+            await asyncio.wait_for(ev.wait(), timeout=wait_limit)
+            logger.info("Exotel playback mark [%s] confirmed complete.", mark_name)
+        except asyncio.TimeoutError:
+            logger.info("Playback mark [%s] wait ended (waited %.1fs). Proceeding.", mark_name, wait_limit)
+        finally:
+            mark_events.pop(mark_name, None)
+            await asyncio.sleep(0.3)
+            is_bot_speaking = False
 
-        # Always transcribe candidate audio via Groq Whisper if audio was buffered (>= 0.4s)
-        transcript = ""
-        is_inaudible = False
-        if len(buffered_pcm) >= 6400:  # >= 0.4s of 8kHz 16-bit PCM
-            transcript = await transcribe_answer(buffered_pcm)
-            clean_text = transcript.strip().rstrip(".").lower()
-            if not transcript.strip() or clean_text in ("", "thank you", "thanks", "you", "[unintelligible / silence]", "[no speech detected]"):
-                if not turn_detector.speech_detected and ans_duration < 1.0:
-                    transcript = "[No speech detected]"
-                else:
-                    transcript = "[No clear response recorded]"
-                is_inaudible = True
-            elif transcript.startswith("[No ") or transcript.startswith("[Transcription error"):
-                is_inaudible = True
-            else:
+    async def run_interview_flow() -> None:
+        nonlocal current_q_idx, total_candidate_audio_sec
+        try:
+            # Brief pause for telephony audio path stabilization
+            await asyncio.sleep(0.5)
+
+            for idx, q in enumerate(questions):
+                current_q_idx = idx
+                q_id = q["id"]
+                wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
+
+                logger.info("Orchestrator: Playing question [%s]: %s", q_id, q["text"])
+                await play_audio_and_wait(f"{q_id}_end", wav_file, max_wait=35.0 if idx == 0 else 15.0)
+
+                # Reset VAD and listen
+                turn_detector.reset(min_answer_seconds=3.0)
+                turn_completed_event.clear()
+                logger.info("Listening for candidate response to [%s]...", q_id)
+
+                # Wait until candidate finishes answering
+                await turn_completed_event.wait()
+
+                # Process and transcribe
+                buffered_pcm = turn_detector.get_audio_bytes()
+                ans_duration = len(buffered_pcm) / (8000 * 2)
+                total_candidate_audio_sec += ans_duration
+                logger.info(
+                    "Candidate answer for [%s] finished (Reason: %s, Audio: %.2fs)",
+                    q_id,
+                    turn_detector.turn_complete_reason,
+                    ans_duration,
+                )
+
+                transcript = await transcribe_answer(buffered_pcm)
+                clean_text = transcript.strip().rstrip(".").lower()
                 is_inaudible = False
-        else:
-            transcript = "[No speech detected]"
-            is_inaudible = True
+                if len(buffered_pcm) < 6400 or clean_text in ("", "thank you", "thanks", "you", "[unintelligible / silence]", "[no speech detected]"):
+                    transcript = "[No speech detected]" if ans_duration < 1.0 else "[No clear response recorded]"
+                    is_inaudible = True
+                elif transcript.startswith("[No ") or transcript.startswith("[Transcription error"):
+                    is_inaudible = True
 
-        logger.info("Transcribed [%s]: '%s' (is_inaudible=%s)", current_q["id"], transcript, is_inaudible)
-        transcripts.append({
-            "question_id": current_q["id"],
-            "question": current_q["text"],
-            "answer": transcript,
-            "duration_seconds": round(ans_duration, 2),
-        })
+                logger.info("Transcribed [%s]: '%s' (is_inaudible=%s)", q_id, transcript, is_inaudible)
+                transcripts.append({
+                    "question_id": q_id,
+                    "question": q["text"],
+                    "answer": transcript,
+                    "duration_seconds": round(ans_duration, 2),
+                })
 
-        current_q_idx += 1
-        if current_q_idx < len(questions):
-            next_q = questions[current_q_idx]
-            q_id = next_q["id"]
-            wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
+                # Play conversational bridge if there are more questions
+                if idx + 1 < len(questions):
+                    bridge_clip = "inaudible" if is_inaudible else "ack"
+                    bridge_file = settings.AUDIO_DIR / f"{bridge_clip}.wav"
+                    if bridge_file.exists():
+                        logger.info("Streaming conversational bridge '%s.wav'...", bridge_clip)
+                        await play_audio_and_wait(f"{bridge_clip}_end", bridge_file, max_wait=10.0)
 
-            # Conversational bridge before next question
-            bridge_clip = "inaudible" if is_inaudible else "ack"
-            bridge_file = settings.AUDIO_DIR / f"{bridge_clip}.wav"
-            if bridge_file.exists():
-                logger.info("Streaming conversational bridge '%s.wav'...", bridge_clip)
-                is_streaming_bot_audio = True
-                await send_audio_file(websocket, stream_sid, bridge_file, bridge_clip)
-                is_streaming_bot_audio = False
-                await asyncio.sleep(0.2)
-
-            logger.info("Advancing to question [%s]: %s", q_id, next_q["text"])
-            is_streaming_bot_audio = True
-            await send_audio_file(websocket, stream_sid, wav_file, q_id)
-            is_streaming_bot_audio = False
-            # Brief pause to let carrier audio playback buffer settle
-            await asyncio.sleep(0.2)
-            turn_detector.reset(min_answer_seconds=4.0)
-            logger.info("Listening for candidate response to [%s]...", q_id)
-            return False
-        else:
+            # All questions finished
             logger.info("All screening questions completed.")
             conclusion_file = settings.AUDIO_DIR / "conclusion.wav"
             if conclusion_file.exists():
                 logger.info("Streaming closing statement 'conclusion.wav'...")
-                is_streaming_bot_audio = True
-                await send_audio_file(websocket, stream_sid, conclusion_file, "conclusion")
-                is_streaming_bot_audio = False
-                await asyncio.sleep(1.2)
+                await play_audio_and_wait("conclusion_end", conclusion_file, max_wait=15.0)
+
             await finalize_session(reason="all_questions_completed")
-            return True
+        except asyncio.CancelledError:
+            logger.info("Interview orchestrator task cancelled.")
+        except Exception as flow_err:
+            logger.error("Error in interview flow: %s", flow_err, exc_info=True)
+            await finalize_session(reason=f"error_{str(flow_err)}")
 
     try:
-        while True:
+        while not report_done:
             # Check hard call timeout safety net
             elapsed = time.monotonic() - call_start_time
             if elapsed >= settings.TOTAL_CALL_TIMEOUT_SECONDS:
@@ -371,13 +386,11 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 break
 
             try:
-                raw_data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                raw_data = await asyncio.wait_for(websocket.receive_text(), timeout=0.5)
             except asyncio.TimeoutError:
-                # Handle telephony carrier silence suppression (Comfort Noise Generation)
-                if not is_streaming_bot_audio and turn_detector.check_timeouts():
-                    done = await handle_turn_completed()
-                    if done:
-                        break
+                # Check silence/timeouts when candidate is expected to speak
+                if not is_bot_speaking and turn_detector.check_timeouts():
+                    turn_completed_event.set()
                 continue
 
             event = json.loads(raw_data)
@@ -416,21 +429,20 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                     "start_time": call_start_time,
                 }
 
-                # Start first question after a brief 0.8s pause for telephony audio path stabilization
-                await asyncio.sleep(0.8)
-                current_q = questions[current_q_idx]
-                q_id = current_q["id"]
-                wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
-                is_streaming_bot_audio = True
-                await send_audio_file(websocket, stream_sid, wav_file, q_id)
-                is_streaming_bot_audio = False
-                await asyncio.sleep(0.2)
-                turn_detector.reset(min_answer_seconds=4.0)
-                logger.info("Listening for candidate response to [%s]...", q_id)
+                # Start the interview flow as an independent orchestrator task
+                if orchestrator_task is None or orchestrator_task.done():
+                    orchestrator_task = asyncio.create_task(run_interview_flow())
+
+            elif ev_type == "mark":
+                mark_data = event.get("mark") or event.get("Mark") or {}
+                mark_name = mark_data.get("name") or mark_data.get("Name", "")
+                logger.info("Exotel mark received: %s", mark_name)
+                if mark_name in mark_events:
+                    mark_events[mark_name].set()
 
             elif ev_type == "media":
-                # Ignore candidate audio while bot itself is streaming question audio
-                if is_streaming_bot_audio:
+                # Ignore audio while bot itself is speaking / prompt is playing
+                if is_bot_speaking:
                     continue
 
                 media_data = event.get("media") or event.get("Media") or {}
@@ -446,28 +458,29 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
 
                 pcm_chunk = base64.b64decode(payload_b64)
                 turn_finished = turn_detector.feed_audio(pcm_chunk)
-
                 if turn_finished:
-                    done = await handle_turn_completed()
-                    if done:
-                        break
+                    turn_completed_event.set()
 
             elif ev_type in ("stop", "closed"):
                 logger.info("Exotel stop event received.")
+                if orchestrator_task and not orchestrator_task.done():
+                    orchestrator_task.cancel()
                 await finalize_session(reason="exotel_stop_received")
                 break
 
-            elif ev_type == "mark":
-                mark_data = event.get("mark") or event.get("Mark") or {}
-                logger.info("Exotel mark received: %s", mark_data.get("name", ""))
-
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected by Exotel/client.")
+        if orchestrator_task and not orchestrator_task.done():
+            orchestrator_task.cancel()
         await finalize_session(reason="websocket_disconnect")
     except Exception as e:
         logger.error("Error during WebSocket streaming session: %s", e, exc_info=True)
+        if orchestrator_task and not orchestrator_task.done():
+            orchestrator_task.cancel()
         await finalize_session(reason=f"error_{str(e)}")
     finally:
+        if orchestrator_task and not orchestrator_task.done():
+            orchestrator_task.cancel()
         try:
             await websocket.close()
         except Exception:
