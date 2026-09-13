@@ -169,14 +169,11 @@ class TurnDetector:
         if self.start_time is None:
             self.start_time = time.monotonic()
 
-        # Apply software Automatic Gain Control (AGC) to boost faint phone audio
-        boosted_chunk = normalize_audio_pcm(pcm_bytes, target_rms=1400.0, max_gain=50.0)
-
-        # Buffer boosted audio for later Whisper transcription
-        self.buffered_pcm.extend(boosted_chunk)
+        # Buffer raw clean PCM audio for Whisper transcription and VAD
+        self.buffered_pcm.extend(pcm_bytes)
 
         # Prepend any leftovers from previous frame
-        combined = self.leftover_pcm + boosted_chunk
+        combined = self.leftover_pcm + pcm_bytes
         total_len = len(combined)
 
         model = self._ensure_model()
