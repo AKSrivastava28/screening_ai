@@ -202,13 +202,14 @@ async def send_audio_file(
             await asyncio.sleep(settings.STREAM_CHUNK_INTERVAL_SECONDS)
 
     # Send mark event signaling playback completion
+    clean_mark = question_id if question_id.endswith("_end") else f"{question_id}_end"
     mark_msg = {
         "event": "mark",
         "stream_sid": stream_sid,
-        "mark": {"name": f"{question_id}_end"},
+        "mark": {"name": clean_mark},
     }
     await websocket.send_text(json.dumps(mark_msg))
-    logger.info("Finished streaming %s to stream %s", wav_path.name, stream_sid)
+    logger.info("Finished streaming %s to stream %s (mark: %s)", wav_path.name, stream_sid, clean_mark)
 
 
 @app.websocket("/media")
@@ -437,8 +438,9 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 mark_data = event.get("mark") or event.get("Mark") or {}
                 mark_name = mark_data.get("name") or mark_data.get("Name", "")
                 logger.info("Exotel mark received: %s", mark_name)
-                if mark_name in mark_events:
-                    mark_events[mark_name].set()
+                for k, ev in list(mark_events.items()):
+                    if k == mark_name or mark_name.startswith(k) or k.startswith(mark_name):
+                        ev.set()
 
             elif ev_type == "media":
                 # Ignore audio while bot itself is speaking / prompt is playing
