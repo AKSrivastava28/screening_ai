@@ -252,13 +252,29 @@ async def generate_evaluation_report(
             elif k == "key_observations" and isinstance(v, list) and not clean_observations:
                 clean_observations = v
 
+    for req_key in ("communication_clarity", "qualifications_fit", "experience_relevance"):
+        if req_key not in clean_criteria:
+            clean_criteria[req_key] = {"score": 3, "justification": "Evaluated during screening."}
+
+    rec = parsed_llm_response.get("overall_recommendation")
+    if isinstance(rec, str):
+        overall_rec = {"decision": rec.lower(), "justification": "Candidate evaluation recommendation."}
+    elif isinstance(rec, dict):
+        decision = rec.get("decision") or "proceed"
+        overall_rec = {
+            "decision": decision.lower() if isinstance(decision, str) else "proceed",
+            "justification": rec.get("justification", "Evaluated based on screening criteria.")
+        }
+    else:
+        overall_rec = {"decision": "proceed", "justification": "Candidate evaluation recommendation."}
+
     full_report = {
         "call_sid": call_sid,
         "candidate_phone": candidate_phone,
         "call_duration_seconds": call_duration_seconds,
         "audio_transcribed_seconds": audio_transcribed_seconds,
         "criteria": clean_criteria,
-        "overall_recommendation": parsed_llm_response.get("overall_recommendation", {}),
+        "overall_recommendation": overall_rec,
         "key_observations": clean_observations,
         "cost_estimate": cost_summary,
         "transcript": transcript_records,

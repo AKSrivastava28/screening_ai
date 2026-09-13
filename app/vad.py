@@ -55,8 +55,8 @@ class TurnDetector:
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
         initial_silence_timeout: float = 12.0,
-        speech_threshold: float = 0.25,
-        silence_threshold: float = 0.15,
+        speech_threshold: float = 0.12,
+        silence_threshold: float = 0.08,
     ) -> None:
         self.sample_rate = sample_rate
         self.max_silence_seconds = (
