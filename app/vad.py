@@ -55,7 +55,7 @@ class TurnDetector:
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
         initial_silence_timeout: float = 12.0,
-        speech_threshold: float = 0.35,
+        speech_threshold: float = 0.50,
         silence_threshold: float = 0.20,
     ) -> None:
         self.sample_rate = sample_rate
@@ -91,6 +91,7 @@ class TurnDetector:
         """Reset state for a new question/turn."""
         self.has_started_speaking = False
         self.is_speaking_now = False
+        self.consecutive_speech_frames = 0
         self.accumulated_silence_seconds = 0.0
         self.total_answer_seconds = 0.0
         self.is_turn_complete = False
@@ -194,15 +195,18 @@ class TurnDetector:
 
             self.total_answer_seconds += self.chunk_duration_seconds
 
-            # State transitions based purely on acoustic speech probability
+            # State transitions with debounce (require >= 2 consecutive speech frames)
             if is_speech:
-                if not self.has_started_speaking:
-                    logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
-                    self.has_started_speaking = True
-                self.is_speaking_now = True
-                self.accumulated_silence_seconds = 0.0
-                self.last_speech_time = time.monotonic()
+                self.consecutive_speech_frames += 1
+                if self.consecutive_speech_frames >= 2:
+                    if not self.has_started_speaking:
+                        logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
+                        self.has_started_speaking = True
+                    self.is_speaking_now = True
+                    self.accumulated_silence_seconds = 0.0
+                    self.last_speech_time = time.monotonic()
             else:
+                self.consecutive_speech_frames = 0
                 self.is_speaking_now = False
                 if self.has_started_speaking:
                     self.accumulated_silence_seconds += self.chunk_duration_seconds
