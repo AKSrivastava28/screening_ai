@@ -93,12 +93,12 @@ def format_markdown_report(data: Dict[str, Any]) -> str:
 
     lines.extend([
         "",
-        "## Cost Estimate Breakdown",
+        "## Cost Estimate Breakdown (INR / USD)",
         "",
-        f"- **Telephony Cost**: ${cost.get('telephony_cost_usd', 0):.4f}",
-        f"- **Whisper STT Cost**: ${cost.get('stt_cost_usd', 0):.4f}",
-        f"- **LLaMA 3.3 LLM Cost**: ${cost.get('llm_cost_usd', 0):.4f}",
-        f"- **Total Estimated Cost**: **${cost.get('total_estimated_cost_usd', 0):.4f}**",
+        f"- **Telephony Cost**: ₹{float(cost.get('telephony_cost_usd', 0) or 0) * 85.0:.4f} (${cost.get('telephony_cost_usd', 0):.4f})",
+        f"- **Whisper STT Cost**: ₹{float(cost.get('stt_cost_usd', 0) or 0) * 85.0:.4f} (${cost.get('stt_cost_usd', 0):.4f})",
+        f"- **LLaMA 3.3 LLM Cost**: ₹{float(cost.get('llm_cost_usd', 0) or 0) * 85.0:.4f} (${cost.get('llm_cost_usd', 0):.4f})",
+        f"- **Total Estimated Cost**: **₹{float(cost.get('total_estimated_cost_usd', 0) or 0) * 85.0:.4f}** (${cost.get('total_estimated_cost_usd', 0):.4f})",
         "",
         "## Full Screening Transcript",
         "",

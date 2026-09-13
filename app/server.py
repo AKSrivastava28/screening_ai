@@ -668,6 +668,11 @@ async def view_report_html(call_sid: str) -> HTMLResponse:
     rec_just = data.get("overall_recommendation", {}).get("justification", "")
     crit = data.get("criteria", {})
     cost = data.get("cost_estimate", {})
+    usd_to_inr = 85.0
+    tel_inr = float(cost.get("telephony_cost_usd", 0) or 0) * usd_to_inr
+    stt_inr = float(cost.get("stt_cost_usd", 0) or 0) * usd_to_inr
+    llm_inr = float(cost.get("llm_cost_usd", 0) or 0) * usd_to_inr
+    tot_inr = float(cost.get("total_estimated_cost_usd", 0) or 0) * usd_to_inr
     transcript = data.get("transcript", [])
     observations = data.get("key_observations", [])
 
@@ -734,10 +739,10 @@ async def view_report_html(call_sid: str) -> HTMLResponse:
 
     <h3 style="margin-top:28px; margin-bottom:8px;">Estimated Call Cost Breakdown</h3>
     <div class="cost-grid">
-      <div class="cost-card"><div>Telephony</div><div>${cost.get('telephony_cost_usd', 0):.4f}</div></div>
-      <div class="cost-card"><div>Whisper STT</div><div>${cost.get('stt_cost_usd', 0):.4f}</div></div>
-      <div class="cost-card"><div>LLaMA 3.3 LLM</div><div>${cost.get('llm_cost_usd', 0):.4f}</div></div>
-      <div class="cost-card" style="border-color:#10b981; background:#ecfdf5;"><div>Total Cost</div><div style="color:#059669;">${cost.get('total_estimated_cost_usd', 0):.4f}</div></div>
+      <div class="cost-card"><div>Telephony</div><div>₹{tel_inr:.4f}</div></div>
+      <div class="cost-card"><div>Whisper STT</div><div>₹{stt_inr:.4f}</div></div>
+      <div class="cost-card"><div>LLaMA 3.3 LLM</div><div>₹{llm_inr:.4f}</div></div>
+      <div class="cost-card" style="border-color:#10b981; background:#ecfdf5;"><div>Total Cost</div><div style="color:#059669;">₹{tot_inr:.4f}</div></div>
     </div>
 
     <h3 style="margin-top:28px; margin-bottom:12px;">Full Screening Transcript</h3>
