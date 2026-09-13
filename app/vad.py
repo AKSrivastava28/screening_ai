@@ -55,8 +55,10 @@ class TurnDetector:
         max_answer_seconds: Optional[float] = None,
         min_answer_seconds: float = 0.0,
         initial_silence_timeout: float = 12.0,
-        speech_threshold: float = 0.50,
+        speech_threshold: float = 0.60,
         silence_threshold: float = 0.20,
+        min_speech_rms: float = 0.0,
+        speech_debounce_frames: int = 3,
     ) -> None:
         self.sample_rate = sample_rate
         self.max_silence_seconds = (
@@ -69,6 +71,8 @@ class TurnDetector:
         self.initial_silence_timeout = initial_silence_timeout
         self.speech_threshold = speech_threshold
         self.silence_threshold = silence_threshold
+        self.min_speech_rms = min_speech_rms
+        self.speech_debounce_frames = speech_debounce_frames
 
         # 256 samples @ 8000Hz = 0.032s (32ms). 256 * 2 bytes = 512 bytes for 16-bit PCM.
         self.window_size_samples = 256
@@ -191,16 +195,21 @@ class TurnDetector:
             with torch.no_grad():
                 speech_prob = model(audio_float32, self.sample_rate).item()
 
-            is_speech = speech_prob >= self.speech_threshold
+            rms = float(np.sqrt(np.mean(audio_int16.astype(np.float32) ** 2))) if self.min_speech_rms > 0 else 999.0
+            is_speech = (speech_prob >= self.speech_threshold) and (rms >= self.min_speech_rms)
 
             self.total_answer_seconds += self.chunk_duration_seconds
 
-            # State transitions with debounce (require >= 2 consecutive speech frames)
+            # State transitions with debounce (require >= speech_debounce_frames continuous frames)
             if is_speech:
                 self.consecutive_speech_frames += 1
-                if self.consecutive_speech_frames >= 2:
+                if self.consecutive_speech_frames >= self.speech_debounce_frames:
                     if not self.has_started_speaking:
-                        logger.info("VAD: Candidate started speaking (prob=%.2f)", speech_prob)
+                        logger.info(
+                            "VAD: Candidate started speaking (prob=%.2f, rms=%.1f)",
+                            speech_prob,
+                            rms,
+                        )
                         self.has_started_speaking = True
                     self.is_speaking_now = True
                     self.accumulated_silence_seconds = 0.0

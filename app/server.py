@@ -114,13 +114,18 @@ def load_questions() -> List[Dict[str, str]]:
         return json.load(f)
 
 
-@app.api_route("/", methods=["GET", "HEAD"])
+@app.get("/")
 async def root_endpoint() -> Dict[str, str]:
     """Root endpoint for Render deployment health probes and status checks."""
     return {"status": "healthy", "service": "screening-ai-voicebot", "version": "1.0.0"}
 
 
-@app.api_route("/health", methods=["GET", "HEAD"])
+@app.head("/", include_in_schema=False)
+async def root_head_endpoint() -> Dict[str, str]:
+    return {"status": "healthy", "service": "screening-ai-voicebot", "version": "1.0.0"}
+
+
+@app.get("/health")
 async def health_check() -> Dict[str, Any]:
     """Health check endpoint exposing system status and audio readiness."""
     questions = load_questions()
@@ -291,7 +296,13 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     current_q_idx = 0
     is_streaming_bot_audio = False
 
-    turn_detector = TurnDetector(min_answer_seconds=1.0, initial_silence_timeout=12.0)
+    turn_detector = TurnDetector(
+        min_answer_seconds=1.0,
+        initial_silence_timeout=12.0,
+        speech_threshold=0.60,
+        min_speech_rms=50.0,
+        speech_debounce_frames=4,
+    )
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
     total_candidate_audio_sec = 0.0
@@ -537,13 +548,13 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                         except Exception:
                             pass
 
-                # If no dynamic follow-up was executed and there are more questions, play standard bridge
-                if not did_followup and (idx + 1 < len(screening_questions)):
-                    bridge_clip = "inaudible" if is_inaudible else "ack"
-                    bridge_file = settings.AUDIO_DIR / f"{bridge_clip}.wav"
-                    if bridge_file.exists():
-                        logger.info("Streaming conversational bridge '%s.wav'...", bridge_clip)
-                        await play_audio_and_wait(f"{bridge_clip}_end", bridge_file, max_wait=10.0)
+                # If no dynamic follow-up was executed and candidate was inaudible, play inaudible bridge.
+                # When audible, skip ack.wav so Question 2 plays immediately without redundant repetition.
+                if not did_followup and (idx + 1 < len(screening_questions)) and is_inaudible:
+                    inaudible_file = settings.AUDIO_DIR / "inaudible.wav"
+                    if inaudible_file.exists():
+                        logger.info("Streaming conversational bridge 'inaudible.wav'...")
+                        await play_audio_and_wait("inaudible_end", inaudible_file, max_wait=10.0)
 
             # All questions finished
             logger.info("All screening questions completed.")
@@ -704,7 +715,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             pass
 
 
-@app.api_route("/call/status", methods=["GET", "POST"])
+@app.post("/call/status")
+@app.get("/call/status", include_in_schema=False)
 async def call_status_webhook(request: Request) -> JSONResponse:
     """Exotel StatusCallback & Passthru Applet webhook.
 

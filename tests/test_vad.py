@@ -165,3 +165,29 @@ def test_turn_detector_min_answer_seconds() -> None:
     assert complete, "Turn should complete once both min_answer_seconds and max_silence_seconds are satisfied"
     assert detector.turn_complete_reason == "silence_timeout"
 
+
+def test_turn_detector_rms_gating_ignores_low_energy_noise() -> None:
+    """Verify that faint noise (< min_speech_rms) does not trigger speech detection even if model probability is high."""
+    detector = TurnDetector(
+        sample_rate=8000,
+        max_silence_seconds=1.0,
+        max_answer_seconds=20.0,
+        speech_threshold=0.60,
+        min_speech_rms=50.0,
+        speech_debounce_frames=3,
+    )
+    mock_model = MockVADModel(prob=0.85)
+    detector.model = mock_model
+
+    # Faint noise (sample amplitude 5 -> RMS ~5.0 < 50.0)
+    faint_audio = b"\x05\x00" * 4000  # 0.5s
+    complete = detector.feed_audio(faint_audio)
+    assert not complete
+    assert not detector.has_started_speaking, "Faint audio below min_speech_rms must not trigger speech"
+
+    # Loud speech (sample amplitude 1000 -> RMS ~1000.0 > 50.0)
+    loud_audio = b"\xe8\x03" * 4000  # 0.5s
+    complete = detector.feed_audio(loud_audio)
+    assert detector.has_started_speaking, "Loud audio above min_speech_rms must trigger speech"
+
+
