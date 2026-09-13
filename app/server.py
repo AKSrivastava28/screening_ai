@@ -18,9 +18,10 @@ from pydantic import BaseModel
 
 from app.audio_utils import chunk_pcm_for_exotel, wav_to_pcm16_bytes
 from app.config import settings
-from app.evaluator import generate_evaluation_report
+from app.evaluator import generate_evaluation_report, generate_followup_question
 from app.stt import transcribe_answer
 from app.telephony import exotel_client
+from app.tts import synthesize_followup_speech
 from app.vad import TurnDetector
 
 logging.basicConfig(
@@ -352,8 +353,82 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                     "duration_seconds": round(ans_duration, 2),
                 })
 
-                # Play conversational bridge if there are more questions
-                if idx + 1 < len(questions):
+                # --- DYNAMIC FOLLOW-UP FEATURE ---
+                # When candidate gives a substantive answer to Q1, generate an intelligent follow-up using LLM + Neural TTS
+                did_followup = False
+                if (
+                    settings.ENABLE_DYNAMIC_FOLLOWUP
+                    and not is_inaudible
+                    and idx == 0
+                    and len(transcript.split()) >= 3
+                ):
+                    logger.info("Initiating dynamic follow-up pipeline for [%s]...", q_id)
+                    followup_file = settings.AUDIO_DIR / f"followup_{q_id}_{int(time.time())}.wav"
+
+                    async def _create_followup_audio() -> Optional[tuple[str, Path]]:
+                        f_text = await generate_followup_question(
+                            q["text"],
+                            transcript,
+                            timeout_seconds=settings.FOLLOWUP_MAX_TIMEOUT_SECONDS,
+                        )
+                        if not f_text:
+                            return None
+                        tts_ok = await synthesize_followup_speech(
+                            f_text,
+                            followup_file,
+                            timeout_seconds=settings.FOLLOWUP_MAX_TIMEOUT_SECONDS,
+                        )
+                        if tts_ok and followup_file.exists():
+                            return f_text, followup_file
+                        return None
+
+                    followup_task = asyncio.create_task(_create_followup_audio())
+
+                    # Concurrently play conversational acknowledgment ('ack.wav') to keep conversation natural
+                    ack_file = settings.AUDIO_DIR / "ack.wav"
+                    if ack_file.exists():
+                        logger.info("Streaming conversational bridge 'ack.wav' while preparing follow-up...")
+                        await play_audio_and_wait("ack_end", ack_file, max_wait=10.0)
+
+                    followup_result = None
+                    try:
+                        followup_result = await asyncio.wait_for(followup_task, timeout=2.5)
+                    except (asyncio.TimeoutError, Exception) as f_err:
+                        logger.warning("Follow-up audio not ready in time (%s). Proceeding cleanly.", f_err)
+
+                    if followup_result:
+                        f_question_text, f_wav_path = followup_result
+                        logger.info("Asking dynamic follow-up: '%s'", f_question_text)
+                        await play_audio_and_wait("followup_q1_end", f_wav_path, max_wait=15.0)
+
+                        turn_detector.reset(min_answer_seconds=2.5)
+                        turn_completed_event.clear()
+                        logger.info("Listening for candidate response to follow-up...")
+                        await turn_completed_event.wait()
+
+                        f_pcm = turn_detector.get_audio_bytes()
+                        f_duration = len(f_pcm) / (8000 * 2)
+                        total_candidate_audio_sec += f_duration
+                        f_transcript = await transcribe_answer(f_pcm)
+                        logger.info("Transcribed follow-up answer: '%s' (%.2fs)", f_transcript, f_duration)
+
+                        transcripts.append({
+                            "question_id": f"{q_id}_followup",
+                            "question": f_question_text,
+                            "answer": f_transcript,
+                            "duration_seconds": round(f_duration, 2),
+                        })
+                        did_followup = True
+
+                        # Cleanup temporary WAV
+                        try:
+                            if f_wav_path.exists():
+                                f_wav_path.unlink()
+                        except Exception:
+                            pass
+
+                # If no dynamic follow-up was executed and there are more questions, play standard bridge
+                if not did_followup and (idx + 1 < len(questions)):
                     bridge_clip = "inaudible" if is_inaudible else "ack"
                     bridge_file = settings.AUDIO_DIR / f"{bridge_clip}.wav"
                     if bridge_file.exists():

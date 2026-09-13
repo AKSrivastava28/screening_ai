@@ -42,10 +42,10 @@ A backend-only service that places an outbound screening call to an Indian phone
 ```
 
 ### Key Principles
-- **Scripted IVR-Style**: Fixed questions, no improvising, no freeform conversation.
-- **Zero Real-time TTS Cost**: Question audio is pre-generated **once** at setup time using Groq Orpheus TTS, resampled to 8kHz mono WAV, and served statically.
-- **Local VAD**: Silero VAD runs in-process on raw 8kHz linear PCM frames without API fees.
-- **End-of-Call Evaluation**: Groq LLaMA 3.3 70B is invoked exactly once after the call concludes.
+- **Hybrid Scripted + Dynamic Architecture**: Questions are structured, but the agent uses Groq LLM + Real-time Neural TTS (`en-IN-NeerjaNeural`) to ask intelligent, personalized follow-up questions tailored to the candidate's answers.
+- **Fail-Safe Playback**: Fixed questions are pre-rendered at 8kHz PCM for zero latency. Dynamic follow-ups are synthesized in background while conversational acknowledgments play, with an automatic fallback if network latency exceeds 2.5s.
+- **Local VAD**: Silero VAD runs in-process on raw 8kHz linear PCM frames without external API fees.
+- **End-of-Call Evaluation**: Groq LLaMA 3.3 70B evaluates full transcripts (including follow-ups) across 5 criteria.
 - **Cost & Safety Guardrails**: Server-enforced per-answer timeout (`MAX_ANSWER_SECONDS`), silence timeout (`MAX_SILENCE_SECONDS`), and whole-call safety net (`TOTAL_CALL_TIMEOUT_SECONDS`).
 
 ---

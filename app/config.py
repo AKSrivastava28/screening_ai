@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     TOTAL_CALL_TIMEOUT_SECONDS: int = 480
     STREAM_CHUNK_INTERVAL_SECONDS: float = 0.19
 
+    # Dynamic Follow-Up Settings
+    ENABLE_DYNAMIC_FOLLOWUP: bool = True
+    FOLLOWUP_MAX_TIMEOUT_SECONDS: float = 3.0
+    FOLLOWUP_VOICE: str = "en-IN-NeerjaNeural"
+
     # Cost Estimation Rates (USD)
     TELEPHONY_RATE_PER_MINUTE: float = 0.015
     GROQ_WHISPER_RATE_PER_MINUTE: float = 0.00111

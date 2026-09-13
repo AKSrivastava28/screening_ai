@@ -111,3 +111,33 @@ def test_generate_evaluation_report_file_creation(tmp_path: Path) -> None:
     assert data["overall_recommendation"]["decision"] in ("proceed", "hold", "reject")
     assert "cost_estimate" in data
     assert data["cost_estimate"]["total_estimated_cost_usd"] > 0
+
+
+def test_generate_followup_question_short_or_empty() -> None:
+    import asyncio
+    from app.evaluator import generate_followup_question
+
+    # Empty answer should safely return None
+    assert asyncio.run(generate_followup_question("What is your role?", "")) is None
+    # Short answer (< 3 words) should safely return None
+    assert asyncio.run(generate_followup_question("What is your role?", "Yes ok")) is None
+    # Inaudible / placeholder answer should safely return None
+    assert asyncio.run(generate_followup_question("What is your role?", "[No speech detected]")) is None
+
+
+def test_generate_followup_question_substantive() -> None:
+    import asyncio
+    from app.evaluator import generate_followup_question
+
+    res = asyncio.run(
+        generate_followup_question(
+            "What are your qualifications?",
+            "I have a bachelor's degree in chemical engineering from BITS Goa.",
+            timeout_seconds=3.0,
+        )
+    )
+    # If API key is present and model reachable, should return a question string
+    if res is not None:
+        assert isinstance(res, str)
+        assert res.endswith("?")
+        assert len(res) > 5

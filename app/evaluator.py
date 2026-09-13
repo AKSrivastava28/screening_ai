@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -110,6 +111,81 @@ def format_markdown_report(data: Dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+async def generate_followup_question(
+    question_text: str,
+    answer_text: str,
+    timeout_seconds: float = 2.5,
+) -> Optional[str]:
+    """Generate a brief, natural follow-up question using Groq LLM based on candidate's answer.
+
+    Args:
+        question_text: The screening question that was asked.
+        answer_text: The candidate's transcribed answer.
+        timeout_seconds: Maximum time to wait before timing out.
+
+    Returns:
+        Optional[str]: 1-sentence follow-up question (max 15 words), or None if failed/timed out.
+    """
+    clean_ans = answer_text.strip()
+    # Skip if answer is too short, inaudible, or placeholder
+    if not clean_ans or len(clean_ans.split()) < 3 or clean_ans.startswith("["):
+        return None
+
+    api_key = settings.GROQ_API_KEY.strip()
+    if not api_key:
+        return None
+
+    system_prompt = (
+        "You are a polite, professional telephone interviewer conducting a first-round job screening call in India. "
+        "The candidate just answered a question. Generate exactly ONE concise, natural follow-up question "
+        "(maximum 15 words) that specifically probes deeper into what they just mentioned. "
+        "Do NOT include any greetings, praise, preambles, or conversational filler like 'Great!' or 'Understood!'. "
+        "Output ONLY the single question."
+    )
+
+    user_prompt = f"Question Asked: {question_text}\nCandidate Answer: {clean_ans}\n\nAsk 1 concise follow-up question:"
+
+    async def _call_llm() -> Optional[str]:
+        client = AsyncGroq(api_key=api_key)
+        candidate_models = [
+            settings.GROQ_LLM_MODEL,
+            "openai/gpt-oss-120b",
+            "llama-3.3-70b-versatile",
+            "qwen/qwen3.8-27b",
+        ]
+        for model_name in candidate_models:
+            try:
+                completion = await client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=40,
+                    temperature=0.3,
+                )
+                raw_followup = completion.choices[0].message.content or ""
+                clean_followup = raw_followup.strip().strip('"').strip("'").strip()
+                if clean_followup and len(clean_followup) > 5:
+                    if not clean_followup.endswith("?"):
+                        clean_followup += "?"
+                    logger.info("Dynamic follow-up generated (%s): '%s'", model_name, clean_followup)
+                    return clean_followup
+            except Exception as e:
+                logger.warning("Follow-up generation with %s failed: %s", model_name, e)
+                continue
+        return None
+
+    try:
+        return await asyncio.wait_for(_call_llm(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.warning("Follow-up LLM generation timed out after %.1fs", timeout_seconds)
+        return None
+    except Exception as err:
+        logger.error("Error generating follow-up question: %s", err)
+        return None
 
 
 async def generate_evaluation_report(
