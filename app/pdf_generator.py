@@ -134,9 +134,16 @@ def generate_candidate_pdf(
         "REJECT": colors.HexColor("#FEE2E2"),
     }
     badge_color = dec_color_map.get(decision, colors.HexColor("#334155"))
-    badge_bg = dec_bg_map.get(decision, colors.HexColor("#F1F5F9"))
+    cand_name = report_data.get("candidate_name", "Candidate")
+    job_role = report_data.get("job_role", "Software Developer")
 
     summary_data = [
+        [
+            Paragraph("<b>Candidate Name:</b>", body_style),
+            Paragraph(f"<b>{cand_name}</b>", bold_body),
+            Paragraph("<b>Applied Role:</b>", body_style),
+            Paragraph(f"<b>{job_role}</b>", bold_body),
+        ],
         [
             Paragraph("<b>Candidate Phone:</b>", body_style),
             Paragraph(str(phone), body_style),

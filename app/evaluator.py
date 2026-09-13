@@ -56,9 +56,14 @@ def format_markdown_report(data: Dict[str, Any]) -> str:
         "REJECT": "🔴 **REJECT**",
     }.get(decision, f"⚪ **{decision}**")
 
+    cand_name = data.get("candidate_name", "Candidate")
+    job_role = data.get("job_role", "Software Developer")
+
     lines = [
         f"# Candidate Screening Report — Call `{data.get('call_sid', 'N/A')}`",
         "",
+        f"- **Candidate Name**: **{cand_name}**",
+        f"- **Applied Role**: **{job_role}**",
         f"- **Candidate Phone**: `{data.get('candidate_phone', 'N/A')}`",
         f"- **Call Duration**: {data.get('call_duration_seconds', 0):.1f} seconds",
         f"- **Status / Recommendation**: {status_badge}",
@@ -195,6 +200,8 @@ async def generate_evaluation_report(
     call_duration_seconds: float,
     audio_transcribed_seconds: float,
     output_dir: Optional[Path] = None,
+    candidate_name: str = "Candidate",
+    job_role: str = "Software Developer",
 ) -> Dict[str, Any]:
     """Generate structured candidate evaluation report using Groq LLaMA-3.3-70b."""
     reports_path = output_dir or settings.REPORTS_DIR
@@ -346,6 +353,8 @@ async def generate_evaluation_report(
 
     full_report = {
         "call_sid": call_sid,
+        "candidate_name": candidate_name,
+        "job_role": job_role,
         "candidate_phone": candidate_phone,
         "call_duration_seconds": call_duration_seconds,
         "audio_transcribed_seconds": audio_transcribed_seconds,

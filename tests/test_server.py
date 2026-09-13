@@ -87,7 +87,7 @@ def test_websocket_media_session(client: TestClient, tmp_path: Path) -> None:
         received_media_chunk = False
         received_mark = False
 
-        for _ in range(50):
+        for _ in range(120):
             try:
                 msg_text = ws.receive_text()
                 msg = json.loads(msg_text)

@@ -61,6 +61,7 @@ app.add_middleware(NormalizePathMiddleware)
 
 # In-memory registry for active & recent call sessions
 active_sessions: Dict[str, Dict[str, Any]] = {}
+pending_candidates: Dict[str, Dict[str, str]] = {}
 
 
 @app.on_event("startup")
@@ -95,6 +96,8 @@ async def on_startup() -> None:
 
 class TriggerCallRequest(BaseModel):
     to_number: Optional[str] = None
+    candidate_name: Optional[str] = "Candidate"
+    job_role: Optional[str] = "Software Developer"
     caller_id: Optional[str] = None
     stream_url: Optional[str] = None
     app_id: Optional[str] = None
@@ -158,6 +161,31 @@ async def health_check() -> Dict[str, Any]:
 @app.post("/call/trigger")
 async def trigger_call(req: TriggerCallRequest = TriggerCallRequest()) -> Dict[str, Any]:
     """Internal manual trigger endpoint to start an outbound screening call via Exotel."""
+    dest_num = req.to_number or settings.EXOTEL_CALLER_NUMBER
+    cand_name = (req.candidate_name or "Candidate").strip()
+    job_role = (req.job_role or "Software Developer").strip()
+
+    clean_phone = re.sub(r"\D", "", dest_num)
+    cand_meta = {
+        "candidate_name": cand_name,
+        "job_role": job_role,
+        "to_number": dest_num,
+    }
+
+    if clean_phone:
+        pending_candidates[clean_phone] = cand_meta
+        if len(clean_phone) >= 10:
+            pending_candidates[clean_phone[-10:]] = cand_meta
+
+    # Pre-synthesize Q1 audio with candidate name & role while phone is ringing
+    clean_suffix = clean_phone[-10:] if clean_phone else "dyn"
+    q1_path = settings.AUDIO_DIR / f"q1_{clean_suffix}.wav"
+    q1_prompt = (
+        f"Hi {cand_name}! Thank you for taking our call. You have applied for the {job_role} role. "
+        f"To begin, could you please tell me about your highest qualifications and educational background?"
+    )
+    asyncio.create_task(synthesize_followup_speech(q1_prompt, q1_path))
+
     try:
         result = await exotel_client.trigger_screening_call(
             to_number=req.to_number,
@@ -166,6 +194,10 @@ async def trigger_call(req: TriggerCallRequest = TriggerCallRequest()) -> Dict[s
             app_id=req.app_id,
             time_limit=req.time_limit,
         )
+        if result.get("call_sid"):
+            pending_candidates[result["call_sid"]] = cand_meta
+        result["candidate_name"] = cand_name
+        result["job_role"] = job_role
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -243,6 +275,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     stream_sid = ""
     call_sid = ""
     candidate_phone = ""
+    candidate_name = "Candidate"
+    job_role = "Software Developer"
     current_q_idx = 0
     is_streaming_bot_audio = False
 
@@ -266,9 +300,13 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
         )
         sid_key = call_sid or stream_sid or f"call_{int(time.time())}"
         session_data = active_sessions.get(sid_key, {})
+        cand_name = session_data.get("candidate_name") or candidate_name
+        cand_role = session_data.get("job_role") or job_role
         session_data.update({
             "call_sid": sid_key,
             "candidate_phone": candidate_phone,
+            "candidate_name": cand_name,
+            "job_role": cand_role,
             "duration": duration,
             "transcripts": transcripts,
             "status": "completed",
@@ -282,6 +320,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 transcript_records=transcripts,
                 call_duration_seconds=duration,
                 audio_transcribed_seconds=total_candidate_audio_sec,
+                candidate_name=cand_name,
+                job_role=cand_role,
             )
         except Exception as err:
             logger.error("Failed to generate evaluation report: %s", err)
@@ -315,12 +355,62 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             # Brief pause for telephony audio path stabilization
             await asyncio.sleep(0.5)
 
-            for idx, q in enumerate(questions):
-                current_q_idx = idx
-                q_id = q["id"]
-                wav_file = settings.AUDIO_DIR / f"{q_id}.wav"
+            clean_suffix = re.sub(r"\D", "", candidate_phone)[-10:] if candidate_phone else "dyn"
 
-                logger.info("Orchestrator: Playing question [%s]: %s", q_id, q["text"])
+            # 100% Dynamic Personalized Questions using Candidate Name and Applied Role
+            screening_questions = [
+                {
+                    "id": "q1",
+                    "text": (
+                        f"Hi {candidate_name}! Thank you for taking our call. You have applied for the {job_role} role. "
+                        f"To begin, could you please tell me about your highest qualifications and educational background?"
+                    ),
+                    "dyn_file": settings.AUDIO_DIR / f"q1_{clean_suffix}.wav",
+                    "fallback_file": settings.AUDIO_DIR / "q1.wav",
+                },
+                {
+                    "id": "q2",
+                    "text": (
+                        f"Got it, thank you. And how many years of relevant experience do you have in {job_role}?"
+                    ),
+                    "dyn_file": settings.AUDIO_DIR / f"q2_{clean_suffix}.wav",
+                    "fallback_file": settings.AUDIO_DIR / "q2.wav",
+                },
+            ]
+
+            for idx, q_obj in enumerate(screening_questions):
+                current_q_idx = idx
+                q_id = q_obj["id"]
+
+                # Dynamic synthesis with zero-lag fallback
+                if idx == 0:
+                    q1_dyn = q_obj["dyn_file"]
+                    if not q1_dyn.exists() or q1_dyn.stat().st_size < 100:
+                        logger.info("Synthesizing dynamic Q1 speech for %s (%s)...", candidate_name, job_role)
+                        await synthesize_followup_speech(q_obj["text"], q1_dyn, timeout_seconds=3.5)
+                    wav_file = q1_dyn if (q1_dyn.exists() and q1_dyn.stat().st_size > 100) else q_obj["fallback_file"]
+
+                    # Concurrently pre-synthesize Q2 while candidate answers Q1!
+                    q2_dyn = screening_questions[1]["dyn_file"]
+                    if not q2_dyn.exists():
+                        asyncio.create_task(synthesize_followup_speech(screening_questions[1]["text"], q2_dyn))
+                else:
+                    q2_dyn = q_obj["dyn_file"]
+                    if not q2_dyn.exists() or q2_dyn.stat().st_size < 100:
+                        logger.info("Synthesizing dynamic Q2 speech for %s...", job_role)
+                        await synthesize_followup_speech(q_obj["text"], q2_dyn, timeout_seconds=3.0)
+                    wav_file = q2_dyn if (q2_dyn.exists() and q2_dyn.stat().st_size > 100) else q_obj["fallback_file"]
+
+                    # Concurrently pre-synthesize conclusion while candidate answers Q2!
+                    conclusion_dyn = settings.AUDIO_DIR / f"conclusion_{clean_suffix}.wav"
+                    conclusion_text = (
+                        f"Thank you for sharing your responses, {candidate_name}. That concludes our screening call "
+                        f"for the {job_role} role. We will evaluate your profile and get back to you shortly. Have a great day!"
+                    )
+                    if not conclusion_dyn.exists():
+                        asyncio.create_task(synthesize_followup_speech(conclusion_text, conclusion_dyn))
+
+                logger.info("Orchestrator: Playing dynamic question [%s]: %s", q_id, q_obj["text"])
                 await play_audio_and_wait(f"{q_id}_end", wav_file, max_wait=35.0 if idx == 0 else 15.0)
 
                 # Reset VAD and listen
@@ -354,7 +444,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 logger.info("Transcribed [%s]: '%s' (is_inaudible=%s)", q_id, transcript, is_inaudible)
                 transcripts.append({
                     "question_id": q_id,
-                    "question": q["text"],
+                    "question": q_obj["text"],
                     "answer": transcript,
                     "duration_seconds": round(ans_duration, 2),
                 })
@@ -373,7 +463,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
 
                     async def _create_followup_audio() -> Optional[tuple[str, Path]]:
                         f_text = await generate_followup_question(
-                            q["text"],
+                            q_obj["text"],
                             transcript,
                             timeout_seconds=settings.FOLLOWUP_MAX_TIMEOUT_SECONDS,
                         )
@@ -434,7 +524,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                             pass
 
                 # If no dynamic follow-up was executed and there are more questions, play standard bridge
-                if not did_followup and (idx + 1 < len(questions)):
+                if not did_followup and (idx + 1 < len(screening_questions)):
                     bridge_clip = "inaudible" if is_inaudible else "ack"
                     bridge_file = settings.AUDIO_DIR / f"{bridge_clip}.wav"
                     if bridge_file.exists():
@@ -443,10 +533,27 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
 
             # All questions finished
             logger.info("All screening questions completed.")
-            conclusion_file = settings.AUDIO_DIR / "conclusion.wav"
+            conclusion_dyn = settings.AUDIO_DIR / f"conclusion_{clean_suffix}.wav"
+            if conclusion_dyn.exists() and conclusion_dyn.stat().st_size > 100:
+                conclusion_file = conclusion_dyn
+            else:
+                conclusion_file = settings.AUDIO_DIR / "conclusion.wav"
+
             if conclusion_file.exists():
-                logger.info("Streaming closing statement 'conclusion.wav'...")
+                logger.info("Streaming closing statement '%s'...", conclusion_file.name)
                 await play_audio_and_wait("conclusion_end", conclusion_file, max_wait=15.0)
+
+            # Cleanup dynamic per-call audio files
+            for temp_f in (
+                screening_questions[0]["dyn_file"],
+                screening_questions[1]["dyn_file"],
+                conclusion_dyn,
+            ):
+                try:
+                    if temp_f.exists():
+                        temp_f.unlink()
+                except Exception:
+                    pass
 
             await finalize_session(reason="all_questions_completed")
         except asyncio.CancelledError:
@@ -504,10 +611,23 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                     candidate_phone,
                 )
 
+                cand_clean = re.sub(r"\D", "", candidate_phone) if candidate_phone else ""
+                cand_meta = (
+                    pending_candidates.get(call_sid)
+                    or pending_candidates.get(cand_clean)
+                    or (pending_candidates.get(cand_clean[-10:]) if len(cand_clean) >= 10 else None)
+                    or {}
+                )
+                candidate_name = cand_meta.get("candidate_name") or candidate_name
+                job_role = cand_meta.get("job_role") or job_role
+                logger.info("Candidate mapped: Name='%s', Role='%s'", candidate_name, job_role)
+
                 active_sessions[call_sid or stream_sid] = {
                     "stream_sid": stream_sid,
                     "call_sid": call_sid,
                     "candidate_phone": candidate_phone,
+                    "candidate_name": candidate_name,
+                    "job_role": job_role,
                     "start_time": call_start_time,
                 }
 
@@ -644,6 +764,8 @@ async def call_status_webhook(request: Request) -> JSONResponse:
                     transcript_records=session.get("transcripts", []),
                     call_duration_seconds=duration_sec or session.get("duration", 0.0),
                     audio_transcribed_seconds=0.0,
+                    candidate_name=session.get("candidate_name", "Candidate"),
+                    job_role=session.get("job_role", "Software Developer"),
                 )
             )
 
@@ -670,10 +792,13 @@ async def list_reports() -> JSONResponse:
             base = settings.PUBLIC_BASE_URL.rstrip('/')
             summary_list.append({
                 "call_sid": data.get("call_sid", f.stem),
+                "candidate_name": data.get("candidate_name", "Candidate"),
+                "job_role": data.get("job_role", "Software Developer"),
                 "candidate_phone": data.get("candidate_phone", "N/A"),
                 "recommendation": data.get("overall_recommendation", {}).get("decision", "N/A"),
                 "duration_seconds": data.get("call_duration_seconds", 0),
                 "total_cost_usd": data.get("cost_estimate", {}).get("total_estimated_cost_usd", 0),
+                "total_cost_inr": data.get("cost_estimate", {}).get("total_estimated_cost_inr", 0),
                 "view_url": f"{base}/reports/{f.stem}/view",
                 "pdf_url": f"{base}/reports/{f.stem}/pdf",
                 "json_url": f"{base}/reports/{f.stem}",
@@ -744,6 +869,8 @@ async def view_report_html(call_sid: str) -> HTMLResponse:
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    cand_name = data.get("candidate_name", "Candidate")
+    cand_role = data.get("job_role", "Software Developer")
     decision = str(data.get("overall_recommendation", {}).get("decision", "HOLD")).upper()
     badge_color = "#10b981" if decision == "PROCEED" else ("#ef4444" if decision == "REJECT" else "#f59e0b")
     rec_just = data.get("overall_recommendation", {}).get("justification", "")
@@ -778,7 +905,7 @@ async def view_report_html(call_sid: str) -> HTMLResponse:
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Candidate Screening Report - {call_sid}</title>
+  <title>Candidate Screening Report - {cand_name} ({cand_role})</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f3f4f6; margin: 0; padding: 24px; color: #111827; }}
@@ -797,7 +924,8 @@ async def view_report_html(call_sid: str) -> HTMLResponse:
     <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e5e7eb; padding-bottom:16px;">
       <div>
         <h1 style="margin:0 0 6px 0; font-size:24px;">Candidate Screening Report</h1>
-        <p style="margin:0; color:#6b7280; font-size:14px;">Call SID: <code>{call_sid}</code> | Phone: <strong>{data.get('candidate_phone', 'N/A')}</strong></p>
+        <p style="margin:0 0 4px 0; color:#1f2937; font-size:15px;"><strong>Candidate:</strong> <span style="color:#2563eb; font-weight:700;">{cand_name}</span> &nbsp;|&nbsp; <strong>Role:</strong> <span style="color:#2563eb; font-weight:700;">{cand_role}</span></p>
+        <p style="margin:0; color:#6b7280; font-size:13px;">Call SID: <code>{call_sid}</code> | Phone: <strong>{data.get('candidate_phone', 'N/A')}</strong></p>
       </div>
       <div style="display:flex; gap:12px; align-items:center;">
         <a href="/reports/{call_sid}/pdf" style="display:inline-block; padding:8px 16px; background:#2563eb; color:white; font-weight:600; font-size:13px; text-decoration:none; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.05);">📥 Download PDF</a>
