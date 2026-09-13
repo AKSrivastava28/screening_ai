@@ -275,6 +275,28 @@ python generate_report.py --demo
 - **Cost Calculation**: Every report logs duration and estimated costs based on configurable rates:
   $$\text{Total Cost} = (\text{call\_min} \times \text{rate}_{\text{telephony}}) + (\text{audio\_min} \times \text{rate}_{\text{whisper}}) + (\text{tokens} \times \text{rate}_{\text{llama}})$$
 
+### Cost Breakdown in Indian Rupees (INR @ ₹85/USD)
+
+All costs are calculated dynamically at the end of every screening call and converted to Indian Rupees:
+
+| Component | Provider / Engine | Unit Rate (USD) | Unit Rate (INR) | Measurement Basis |
+| :--- | :--- | :--- | :--- | :--- |
+| **Telephony** | Exotel Outbound PSTN | $0.015 / minute | **₹1.275 / min** (~₹1.28) | Total connected call duration |
+| **STT (Speech-to-Text)** | Groq Whisper Large v3 Turbo | $0.00111 / minute ($0.067/hr) | **₹0.094 / min** (< 10 paise/min) | Candidate speech audio duration only |
+| **LLM Evaluation** | Groq LLaMA 3.3 70B | In: $0.59 / 1M tokens<br>Out: $0.79 / 1M tokens | In: **₹0.050 / 1K tokens**<br>Out: **₹0.067 / 1K tokens** | Exact tokens from Groq API response |
+| **TTS (Text-to-Speech)** | Pre-rendered 8kHz mono WAV | $0.000 / call | **₹0.00** | Static assets, zero live API cost |
+
+#### Typical Per-Call Cost (1-Minute Screening Session):
+
+| Item | Usage in Call | Cost (USD) | Cost (INR / Rupees) |
+| :--- | :--- | :--- | :--- |
+| **Exotel Telephony** | 60 seconds (1.0 min) | $0.01500 | **₹1.28** |
+| **Groq Whisper STT** | ~15 seconds speech | $0.00028 | **₹0.02** |
+| **Groq LLaMA 3.3 LLM** | ~1,100 prompt + 300 output tokens | $0.00089 | **₹0.08** |
+| **TOTAL PER CANDIDATE** | **1 min call + evaluation + PDF** | **~$0.0162** | **~₹1.38 INR** |
+
+> **Note:** The downloadable PDF candidate report automatically outputs all cost estimates in Indian Rupees (`Rs.`).
+
 ---
 
 ## Deployment to Render

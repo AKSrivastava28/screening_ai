@@ -234,21 +234,32 @@ def generate_candidate_pdf(
             elements.append(Spacer(1, 8))
         elements.append(Spacer(1, 6))
 
-    # 6. Cost Breakdown Table
+    # 6. Cost Breakdown Table (Converted to Indian Rupees INR)
     cost = report_data.get("cost_estimate", {})
-    elements.append(Paragraph("Telephony & AI Cost Estimate", section_heading))
+    usd_to_inr = 85.0
+    tel_usd = float(cost.get("telephony_cost_usd", 0) or 0)
+    stt_usd = float(cost.get("stt_cost_usd", 0) or 0)
+    llm_usd = float(cost.get("llm_cost_usd", 0) or 0)
+    tot_usd = float(cost.get("total_estimated_cost_usd", 0) or 0)
+
+    tel_inr = tel_usd * usd_to_inr
+    stt_inr = stt_usd * usd_to_inr
+    llm_inr = llm_usd * usd_to_inr
+    tot_inr = tot_usd * usd_to_inr
+
+    elements.append(Paragraph("Telephony & AI Cost Estimate (INR @ Rs. 85/USD)", section_heading))
     cost_data = [
         [
             Paragraph("<b>Telephony Cost (Exotel)</b>", body_style),
-            Paragraph(f"${cost.get('telephony_cost_usd', 0):.5f}", body_style),
+            Paragraph(f"Rs. {tel_inr:.4f}", body_style),
             Paragraph("<b>Whisper STT Cost</b>", body_style),
-            Paragraph(f"${cost.get('stt_cost_usd', 0):.5f}", body_style),
+            Paragraph(f"Rs. {stt_inr:.4f}", body_style),
         ],
         [
             Paragraph("<b>LLM Evaluation Cost (Groq)</b>", body_style),
-            Paragraph(f"${cost.get('llm_cost_usd', 0):.5f}", body_style),
-            Paragraph("<b>Total Estimated Cost</b>", bold_body),
-            Paragraph(f"<b>${cost.get('total_estimated_cost_usd', 0):.5f}</b>", bold_body),
+            Paragraph(f"Rs. {llm_inr:.4f}", body_style),
+            Paragraph("<b>Total Estimated Cost (INR)</b>", bold_body),
+            Paragraph(f"<b>Rs. {tot_inr:.4f}</b>", bold_body),
         ],
     ]
     cost_table = Table(cost_data, colWidths=[150, 120, 150, 120])
