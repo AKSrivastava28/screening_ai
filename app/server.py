@@ -186,19 +186,19 @@ async def trigger_call(req: TriggerCallRequest = TriggerCallRequest()) -> Dict[s
     clean_suffix = clean_phone[-10:] if clean_phone else "dyn"
     q1_path = settings.AUDIO_DIR / f"q1_{clean_suffix}.wav"
     q1_prompt = (
-        f"Hi {cand_name}! Thank you for taking our call. You have applied for the {job_role} role. "
-        f"To begin, could you please tell me about your highest qualifications and educational background?"
+        f"Hi {cand_name}, thanks for taking our call for the {job_role} role. "
+        f"What are your highest qualifications and educational background?"
     )
     asyncio.create_task(synthesize_followup_speech(q1_prompt, q1_path, timeout_seconds=15.0))
 
     q2_path = settings.AUDIO_DIR / f"q2_{clean_suffix}.wav"
-    q2_prompt = f"Got it, thank you. And how many years of relevant experience do you have in {job_role}?"
+    q2_prompt = f"Got it. And how many years of relevant experience do you have in {job_role}?"
     asyncio.create_task(synthesize_followup_speech(q2_prompt, q2_path, timeout_seconds=15.0))
 
     conc_path = settings.AUDIO_DIR / f"conclusion_{clean_suffix}.wav"
     conc_prompt = (
-        f"Thank you for sharing your responses, {cand_name}. That concludes our screening call "
-        f"for the {job_role} role. We will evaluate your profile and get back to you shortly. Have a great day!"
+        f"Thank you {cand_name}, that concludes our screening call for the {job_role} role. "
+        f"We will evaluate your profile and get back to you shortly. Have a great day!"
     )
     asyncio.create_task(synthesize_followup_speech(conc_prompt, conc_path, timeout_seconds=15.0))
 
@@ -299,9 +299,9 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     turn_detector = TurnDetector(
         min_answer_seconds=1.0,
         initial_silence_timeout=12.0,
-        speech_threshold=0.60,
-        min_speech_rms=50.0,
-        speech_debounce_frames=4,
+        speech_threshold=0.65,
+        min_speech_rms=150.0,
+        speech_debounce_frames=3,
     )
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
@@ -401,8 +401,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 {
                     "id": "q1",
                     "text": (
-                        f"Hi {candidate_name}! Thank you for taking our call. You have applied for the {job_role} role. "
-                        f"To begin, could you please tell me about your highest qualifications and educational background?"
+                        f"Hi {candidate_name}, thanks for taking our call for the {job_role} role. "
+                        f"What are your highest qualifications and educational background?"
                     ),
                     "dyn_file": settings.AUDIO_DIR / f"q1_{clean_suffix}.wav",
                     "fallback_file": settings.AUDIO_DIR / "q1.wav",
@@ -410,7 +410,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 {
                     "id": "q2",
                     "text": (
-                        f"Got it, thank you. And how many years of relevant experience do you have in {job_role}?"
+                        f"Got it. And how many years of relevant experience do you have in {job_role}?"
                     ),
                     "dyn_file": settings.AUDIO_DIR / f"q2_{clean_suffix}.wav",
                     "fallback_file": settings.AUDIO_DIR / "q2.wav",

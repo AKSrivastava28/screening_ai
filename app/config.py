@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # Call Behavior & Guardrails
     MAX_SILENCE_SECONDS: float = 1.3
-    MAX_ANSWER_SECONDS: float = 45.0
+    MAX_ANSWER_SECONDS: float = 12.0
     TOTAL_CALL_TIMEOUT_SECONDS: int = 480
     STREAM_CHUNK_INTERVAL_SECONDS: float = 0.19
 
