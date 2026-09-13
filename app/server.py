@@ -291,7 +291,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     current_q_idx = 0
     is_streaming_bot_audio = False
 
-    turn_detector = TurnDetector(min_answer_seconds=4.0, initial_silence_timeout=12.0)
+    turn_detector = TurnDetector(min_answer_seconds=1.5, initial_silence_timeout=12.0)
     transcripts: List[Dict[str, Any]] = []
     call_start_time = time.monotonic()
     total_candidate_audio_sec = 0.0
@@ -309,6 +309,23 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
             reason,
             duration,
         )
+
+        # Safeguard: if candidate spoke but session ended before transcripts were appended
+        if not transcripts and len(turn_detector.buffered_pcm) > 6400:
+            logger.info("Transcribing final candidate in-flight speech before closing session...")
+            try:
+                final_tx = await transcribe_answer(turn_detector.get_audio_bytes())
+                if final_tx and not final_tx.startswith("[No ") and not final_tx.startswith("[Transcription error"):
+                    transcripts.append({
+                        "question_id": "q1",
+                        "question": "Qualifications and educational background",
+                        "answer": final_tx,
+                        "duration_seconds": round(len(turn_detector.buffered_pcm) / 16000.0, 2),
+                    })
+                    total_candidate_audio_sec += len(turn_detector.buffered_pcm) / 16000.0
+            except Exception as tx_err:
+                logger.warning("Could not transcribe in-flight speech: %s", tx_err)
+
         sid_key = call_sid or stream_sid or f"call_{int(time.time())}"
         session_data = active_sessions.get(sid_key, {})
         cand_name = session_data.get("candidate_name") or candidate_name
@@ -411,7 +428,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 await play_audio_and_wait(f"{q_id}_end", wav_file, max_wait=35.0 if idx == 0 else 15.0)
 
                 # Reset VAD and listen
-                turn_detector.reset(min_answer_seconds=3.0)
+                turn_detector.reset(min_answer_seconds=1.5)
                 turn_completed_event.clear()
                 logger.info("Listening for candidate response to [%s]...", q_id)
 
@@ -494,7 +511,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                         logger.info("Asking dynamic follow-up: '%s'", f_question_text)
                         await play_audio_and_wait("followup_q1_end", f_wav_path, max_wait=15.0)
 
-                        turn_detector.reset(min_answer_seconds=2.5)
+                        turn_detector.reset(min_answer_seconds=1.5)
                         turn_completed_event.clear()
                         logger.info("Listening for candidate response to follow-up...")
                         await turn_completed_event.wait()
