@@ -192,7 +192,7 @@ async def trigger_call(req: TriggerCallRequest = TriggerCallRequest()) -> Dict[s
     asyncio.create_task(synthesize_followup_speech(q1_prompt, q1_path, timeout_seconds=15.0))
 
     q2_path = settings.AUDIO_DIR / f"q2_{clean_suffix}.wav"
-    q2_prompt = f"Got it. And how many years of relevant experience do you have in {job_role}?"
+    q2_prompt = f"Got it. And how many years of relevant experience do you have as a {job_role}?"
     asyncio.create_task(synthesize_followup_speech(q2_prompt, q2_path, timeout_seconds=15.0))
 
     conc_path = settings.AUDIO_DIR / f"conclusion_{clean_suffix}.wav"
@@ -299,8 +299,8 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
     turn_detector = TurnDetector(
         min_answer_seconds=1.0,
         initial_silence_timeout=12.0,
-        speech_threshold=0.65,
-        min_speech_rms=150.0,
+        speech_threshold=0.60,
+        min_speech_rms=85.0,
         speech_debounce_frames=3,
     )
     transcripts: List[Dict[str, Any]] = []
@@ -410,7 +410,7 @@ async def websocket_media_endpoint(websocket: WebSocket) -> None:
                 {
                     "id": "q2",
                     "text": (
-                        f"Got it. And how many years of relevant experience do you have in {job_role}?"
+                        f"Got it. And how many years of relevant experience do you have as a {job_role}?"
                     ),
                     "dyn_file": settings.AUDIO_DIR / f"q2_{clean_suffix}.wav",
                     "fallback_file": settings.AUDIO_DIR / "q2.wav",

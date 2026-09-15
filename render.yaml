@@ -37,8 +37,8 @@ services:
       - key: PUBLIC_BASE_URL
         sync: false
       - key: MAX_SILENCE_SECONDS
-        value: 3
+        value: 2.0
       - key: MAX_ANSWER_SECONDS
-        value: 45
+        value: 22.0
       - key: TOTAL_CALL_TIMEOUT_SECONDS
         value: 480
